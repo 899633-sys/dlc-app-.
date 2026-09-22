@@ -31,7 +31,7 @@ class DlcProduct {
   final String dlcTicker;
   final String underlyingTicker;
   final String dlcName;
-  final String direction; // "LONG" или "SHORT"
+  final String direction;
   final int leverage;
   final double bid;
   final double ask;
@@ -79,17 +79,15 @@ class MainScalperScreen extends StatefulWidget {
 }
 
 class _MainScalperScreenState extends State<MainScalperScreen> {
-  // Параметры базовой акции (HKEX)
   final String stockTicker = "0700.HK";
   double stockPrice = 382.40;
-  double emaFast = 382.40; // EMA 9
-  double emaSlow = 382.40; // EMA 21
+  double emaFast = 382.40;
+  double emaSlow = 382.40;
   final double alphaFast = 2 / (9 + 1);
   final double alphaSlow = 2 / (21 + 1);
   final List<double> priceHistory = [];
   double rsi = 50.0;
 
-  // Каталог актуальных DLC от SocGen на SGX
   final List<DlcProduct> dlcCatalog = [
     DlcProduct(
       dlcTicker: "WK4W",
@@ -114,7 +112,6 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
   DlcProduct? recommendedDlc;
   String marketTrend = "WAIT";
 
-  // Состояние сделки
   bool isPositionOpen = false;
   DlcProduct? activeDlc;
   double positionEntryPrice = 0.0;
@@ -144,18 +141,15 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
     setState(() {
       stockPrice = newPrice;
 
-      // 1. Расчет скользящих средних
       emaFast = (stockPrice * alphaFast) + (emaFast * (1 - alphaFast));
       emaSlow = (stockPrice * alphaSlow) + (emaSlow * (1 - alphaSlow));
 
-      // 2. Расчет RSI(14)
       priceHistory.add(stockPrice);
       if (priceHistory.length > 14) {
         priceHistory.removeAt(0);
         _calcRsi();
       }
 
-      // 3. Анализ тренда и подбор оптимального DLC
       if (emaFast > emaSlow && rsi < 70) {
         marketTrend = "STRONG BUY";
         recommendedDlc = dlcCatalog.firstWhere((d) => d.direction == "LONG");
@@ -166,10 +160,8 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
         marketTrend = "WAIT";
       }
 
-      // 4. Обновление цены открытого DLC с плечом 5x
       _updateDlcPrices();
 
-      // 5. Проверка условий выхода (Exit Engine)
       if (isPositionOpen && activeDlc != null) {
         _evaluateExitStrategy();
       }
@@ -198,7 +190,7 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
       final leverageMultiplier = activeDlc!.direction == "LONG" ? 5 : -5;
 
       activeDlcCurrentBid = double.parse(
-        (positionEntryPrice * (1 + (diffStockPercent * leverageMultiplier * 0.05))).toStringAsFixed(3)
+        (positionEntryPrice * (1 + (diffStockPercent * leverageMultiplier * 0.05))).toStringAsFixed(3),
       );
 
       if (activeDlcCurrentBid > positionPeakPrice) {
@@ -209,9 +201,8 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
 
   void _evaluateExitStrategy() {
     final profitPercent = ((activeDlcCurrentBid - positionEntryPrice) / positionEntryPrice) * 100;
-    final trailingCutoff = positionPeakPrice * 0.97; // 3% откат от пика
+    final trailingCutoff = positionPeakPrice * 0.97;
 
-    // Трейлинг-стоп (защита прибыли)
     if (positionPeakPrice > positionEntryPrice * 1.03 && activeDlcCurrentBid <= trailingCutoff) {
       currentExitDecision = ExitDecision(
         urgency: ExitUrgency.takeProfit,
@@ -223,7 +214,6 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
       return;
     }
 
-    // Стоп-лосс
     if (profitPercent <= -4.0) {
       currentExitDecision = ExitDecision(
         urgency: ExitUrgency.stopLoss,
@@ -235,7 +225,6 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
       return;
     }
 
-    // Затухание импульса по RSI
     if (activeDlc!.direction == "LONG" && rsi > 72) {
       currentExitDecision = ExitDecision(
         urgency: ExitUrgency.takeProfit,
@@ -256,7 +245,6 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
       return;
     }
 
-    // Удержание позиции
     currentExitDecision = ExitDecision(
       urgency: ExitUrgency.none,
       title: "ДЕРЖИМ ПОЗИЦИЮ",
@@ -292,7 +280,7 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // ВИДЖЕТЫ ИНТЕРФЕЙСА
+  // ВИДЖЕТЫ
   // ---------------------------------------------------------------------------
 
   @override
@@ -480,7 +468,7 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
                   foregroundColor: Colors.black,
                   textStyle: const TextStyle(fontWeight: FontWeight.bold),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  shape: BorderRadius.circular(10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
               )
             ],
