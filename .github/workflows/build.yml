@@ -24,8 +24,14 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Create Android project files
-        run: flutter create --project-name=dlc_scalper --org=com.example --platforms=android .
+      - name: Recreate Android Project Skeleton
+        run: |
+          mkdir temp_scaffold
+          cd temp_scaffold
+          flutter create --project-name=dlc_scalper --org=com.example --platforms=android .
+          cp -r android ..
+          cd ..
+          rm -rf temp_scaffold
 
       - name: Install dependencies
         run: flutter pub get
