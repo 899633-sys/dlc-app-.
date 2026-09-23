@@ -30,9 +30,9 @@ class DlcScalperApp extends StatelessWidget {
 class StockConfig {
   final String ticker;
   final String name;
-  final String sinaTicker; // Формат Sina: rt_hk00700
-  final String qTicker;    // Формат Tencent для Watchlist: r_hk00700 / s_usTSLA
-  final String market;     // "HK" или "US"
+  final String sinaTicker;
+  final String qTicker;
+  final String market;
   final List<DlcInstrument> dlcList;
 
   StockConfig({
@@ -69,6 +69,42 @@ class OrderBookEntry {
   final double price;
   final int volume;
   OrderBookEntry(this.price, this.volume);
+}
+
+class MinuteCandle {
+  final int minuteTimestamp;
+  double open;
+  double high;
+  double low;
+  double close;
+
+  MinuteCandle({
+    required this.minuteTimestamp,
+    required this.open,
+    required this.high,
+    required this.low,
+    required this.close,
+  });
+}
+
+class TradePlan {
+  final String action; // "BUY CALL (LONG DLC)" / "BUY PUT (SHORT DLC)" / "WAIT"
+  final double targetStockPrice;
+  final double targetStockPercent;
+  final double targetDlcPercent;
+  final double stopLossStockPercent;
+  final String timeHorizon;
+  final String rationale;
+
+  TradePlan({
+    required this.action,
+    required this.targetStockPrice,
+    required this.targetStockPercent,
+    required this.targetDlcPercent,
+    required this.stopLossStockPercent,
+    required this.timeHorizon,
+    required this.rationale,
+  });
 }
 
 class WatchlistQuote {
@@ -172,7 +208,6 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
         DlcInstrument(dlcTicker: "MZSW", name: "Xiaomi 5xS SG", direction: "SHORT", leverage: 5, bid: 0.110, ask: 0.115),
       ],
     ),
-    // US Stocks
     StockConfig(ticker: "TSLA", name: "Tesla Inc", sinaTicker: "gb_tsla", qTicker: "s_usTSLA", market: "US"),
     StockConfig(ticker: "NVDA", name: "Nvidia", sinaTicker: "gb_nvda", qTicker: "s_usNVDA", market: "US"),
     StockConfig(ticker: "AAPL", name: "Apple Inc", sinaTicker: "gb_aapl", qTicker: "s_usAAPL", market: "US"),
@@ -238,7 +273,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 1: СКАЛЬПЕР DLC (SINA L2 ORDER BOOK GATEWAY)
+// ЭКРАН 1: СКАЛЬПЕР DLC (M1 СВЕЧИ + СТАБИЛЬНЫЙ СИГНАЛ + ЦЕЛИ)
 // ---------------------------------------------------------------------------
 
 class DlcScalperScreen extends StatefulWidget {
@@ -258,20 +293,32 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   String updateTimestamp = "--:--:--";
   bool isMarketConnected = false;
 
-  double emaFast = 0.0;
-  double emaSlow = 0.0;
+  // Агрегатор минутных свечей (M1) для фильтрации шума
+  final List<MinuteCandle> m1Candles = [];
+  MinuteCandle? currentCandle;
+
+  double emaFast = 0.0; // EMA 9 по закрытиям M1
+  double emaSlow = 0.0; // EMA 21 по закрытиям M1
   final double alphaFast = 2 / (9 + 1);
   final double alphaSlow = 2 / (21 + 1);
-  final List<double> priceHistory = [];
   double rsi = 50.0;
 
   List<OrderBookEntry> bids = [];
   List<OrderBookEntry> asks = [];
 
-  String marketTrend = "WAIT";
-  bool isTrendAboveOnePercent = false;
-  bool canHoldOvernight = false;
-  String overnightStatus = "";
+  // Стабильный торговый план
+  TradePlan currentPlan = TradePlan(
+    action: "WAIT",
+    targetStockPrice: 0.0,
+    targetStockPercent: 0.0,
+    targetDlcPercent: 0.0,
+    stopLossStockPercent: 0.0,
+    timeHorizon: "Ожидание",
+    rationale: "Идет накопление тиков и формирование минутной структуры.",
+  );
+
+  int stableSignalCounter = 0;
+  String pendingSignal = "WAIT";
 
   Timer? _pollingTimer;
 
@@ -322,17 +369,12 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
       final parts = payload.split(',');
       if (parts.length < 28) return;
 
-      // Формат Sina rt_hk:
-      // 3: Пред. закрытие, 4: High, 5: Low, 6: Текущая цена сделки (Last)
       final prev = double.tryParse(parts[3]) ?? 0.0;
       final high = double.tryParse(parts[4]) ?? 0.0;
       final low = double.tryParse(parts[5]) ?? 0.0;
       final current = double.tryParse(parts[6]) ?? 0.0;
       final timeStr = parts.length > 18 ? parts[18] : "";
 
-      // Парсинг 5 уровней стакана HKEX:
-      // Bid: цены на индексах 9, 11, 13, 15, 17 | объемы на 10, 12, 14, 16, 18
-      // Ask: цены на индексах 19, 21, 23, 25, 27 | объемы на 20, 22, 24, 26, 28
       final List<OrderBookEntry> tempBids = [];
       final List<OrderBookEntry> tempAsks = [];
 
@@ -358,69 +400,140 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         asks = tempAsks;
         if (timeStr.isNotEmpty) updateTimestamp = timeStr;
 
-        if (emaFast == 0.0) {
-          emaFast = livePrice;
-          emaSlow = livePrice;
-        } else {
-          emaFast = (livePrice * alphaFast) + (emaFast * (1 - alphaFast));
-          emaSlow = (livePrice * alphaSlow) + (emaSlow * (1 - alphaSlow));
-        }
-
-        priceHistory.add(livePrice);
-        if (priceHistory.length > 14) {
-          priceHistory.removeAt(0);
-          _calcRsi();
-        }
-
-        _evalTrend();
+        // Посекундная агрегация в M1-свечи
+        _updateCandles(current);
       });
     } catch (_) {}
   }
 
-  void _calcRsi() {
-    double gains = 0, losses = 0;
-    for (int i = 1; i < priceHistory.length; i++) {
-      final diff = priceHistory[i] - priceHistory[i - 1];
-      if (diff >= 0) gains += diff; else losses += diff.abs();
+  void _updateCandles(double price) {
+    if (price <= 0) return;
+    final now = DateTime.now();
+    final currentMinute = now.year * 100000000 + now.month * 1000000 + now.day * 10000 + now.hour * 100 + now.minute;
+
+    if (currentCandle == null || currentCandle!.minuteTimestamp != currentMinute) {
+      if (currentCandle != null) {
+        m1Candles.add(currentCandle!);
+        if (m1Candles.length > 30) m1Candles.removeAt(0);
+        _recalculateIndicators();
+      }
+      currentCandle = MinuteCandle(
+        minuteTimestamp: currentMinute,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+      );
+    } else {
+      if (price > currentCandle!.high) currentCandle!.high = price;
+      if (price < currentCandle!.low) currentCandle!.low = price;
+      currentCandle!.close = price;
     }
-    if (losses == 0) { rsi = 100; return; }
-    rsi = 100 - (100 / (1 + (gains / losses)));
+
+    if (emaFast == 0.0) {
+      emaFast = price;
+      emaSlow = price;
+    }
   }
 
-  void _evalTrend() {
-    if (emaSlow == 0.0) return;
-    final distPercent = ((emaFast - emaSlow).abs() / emaSlow) * 100;
+  void _recalculateIndicators() {
+    if (m1Candles.isEmpty) return;
 
-    if (emaFast > emaSlow && rsi < 70) {
-      marketTrend = "STRONG BUY";
-    } else if (emaFast < emaSlow && rsi > 30) {
-      marketTrend = "STRONG SELL";
-    } else {
-      marketTrend = "WAIT";
+    final latestClose = m1Candles.last.close;
+    emaFast = (latestClose * alphaFast) + (emaFast * (1 - alphaFast));
+    emaSlow = (latestClose * alphaSlow) + (emaSlow * (1 - alphaSlow));
+
+    if (m1Candles.length >= 14) {
+      double gains = 0, losses = 0;
+      for (int i = m1Candles.length - 14; i < m1Candles.length; i++) {
+        final diff = m1Candles[i].close - m1Candles[i - 1].close;
+        if (diff >= 0) gains += diff; else losses += diff.abs();
+      }
+      if (losses == 0) {
+        rsi = 100;
+      } else {
+        rsi = 100 - (100 / (1 + (gains / losses)));
+      }
     }
 
-    final dayRangePercent = livePrice > 0 ? ((dayHigh - dayLow) / livePrice) * 100 : 0.0;
-    isTrendAboveOnePercent = (distPercent >= 0.25) || (dayRangePercent >= 1.2 && marketTrend != "WAIT");
+    _evaluateStableTradePlan();
+  }
 
-    if (marketTrend == "STRONG BUY" && rsi >= 45 && rsi <= 65 && distPercent >= 0.3) {
-      canHoldOvernight = true;
-      overnightStatus = "Тренд устойчивый. Допустим перенос на следующий день (Swing).";
-    } else if (marketTrend == "STRONG SELL" && rsi <= 55 && rsi >= 35 && distPercent >= 0.3) {
-      canHoldOvernight = true;
-      overnightStatus = "Медвежий тренд стабилен. Допустим овернайт для Short DLC.";
+  void _evaluateStableTradePlan() {
+    if (emaSlow == 0.0) return;
+
+    // Расхождение EMA в процентах
+    final diffPercent = ((emaFast - emaSlow) / emaSlow) * 100;
+
+    String candidateSignal = "WAIT";
+    if (diffPercent >= 0.18 && rsi < 68) {
+      candidateSignal = "BUY CALL";
+    } else if (diffPercent <= -0.18 && rsi > 32) {
+      candidateSignal = "BUY PUT";
+    }
+
+    // Фильтр дребезга (Сигнал должен удержаться минимум 3 подтверждения подряд)
+    if (candidateSignal == pendingSignal) {
+      stableSignalCounter++;
     } else {
-      canHoldOvernight = false;
-      overnightStatus = "Только внутри дня (Intraday). Риск гэпа/отката завтра.";
+      pendingSignal = candidateSignal;
+      stableSignalCounter = 1;
+    }
+
+    if (stableSignalCounter >= 3) {
+      if (candidateSignal == "BUY CALL") {
+        // Цель базового актива: минимум +1.2%, стоп -0.5%
+        final targetPct = 1.25;
+        final targetPrice = livePrice * (1 + targetPct / 100);
+        final isSwing = rsi >= 45 && rsi <= 60 && diffPercent >= 0.35;
+
+        currentPlan = TradePlan(
+          action: "BUY CALL (LONG DLC)",
+          targetStockPrice: targetPrice,
+          targetStockPercent: targetPct,
+          targetDlcPercent: targetPct * 5, // плечо 5x
+          stopLossStockPercent: 0.55,
+          timeHorizon: isSwing ? "1-2 ДНЯ (OVERNIGHT SWING)" : "25-45 МИНУТ (INTRADAY)",
+          rationale: "EMA 9 уверенно выше EMA 21. Импульс подтвержден закрытием минутных свечей.",
+        );
+      } else if (candidateSignal == "BUY PUT") {
+        final targetPct = 1.20;
+        final targetPrice = livePrice * (1 - targetPct / 100);
+        final isSwing = rsi <= 55 && rsi >= 40 && diffPercent <= -0.35;
+
+        currentPlan = TradePlan(
+          action: "BUY PUT (SHORT DLC)",
+          targetStockPrice: targetPrice,
+          targetStockPercent: targetPct,
+          targetDlcPercent: targetPct * 5,
+          stopLossStockPercent: 0.50,
+          timeHorizon: isSwing ? "1-2 ДНЯ (OVERNIGHT SWING)" : "20-40 МИНУТ (INTRADAY)",
+          rationale: "Нисходящий тренд. Давление продавцов устойчиво на интервале M1.",
+        );
+      } else {
+        currentPlan = TradePlan(
+          action: "WAIT",
+          targetStockPrice: 0.0,
+          targetStockPercent: 0.0,
+          targetDlcPercent: 0.0,
+          stopLossStockPercent: 0.0,
+          timeHorizon: "Вне рынка",
+          rationale: "Боковой диапазон. Потенциал хода < 1.0%, вход не компенсирует спред.",
+        );
+      }
     }
   }
 
   List<DlcInstrument> _getRankedDlcs() {
     final list = List<DlcInstrument>.from(currentStock.dlcList);
     list.sort((a, b) {
-      final aM = (marketTrend == "STRONG BUY" && a.direction == "LONG") || (marketTrend == "STRONG SELL" && a.direction == "SHORT");
-      final bM = (marketTrend == "STRONG BUY" && b.direction == "LONG") || (marketTrend == "STRONG SELL" && b.direction == "SHORT");
-      if (aM && !bM) return -1;
-      if (!aM && bM) return 1;
+      final aMatches = (currentPlan.action.contains("CALL") && a.direction == "LONG") ||
+          (currentPlan.action.contains("PUT") && a.direction == "SHORT");
+      final bMatches = (currentPlan.action.contains("CALL") && b.direction == "LONG") ||
+          (currentPlan.action.contains("PUT") && b.direction == "SHORT");
+
+      if (aMatches && !bMatches) return -1;
+      if (!aMatches && bMatches) return 1;
       return a.spreadPercent.compareTo(b.spreadPercent);
     });
     return list;
@@ -454,9 +567,12 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
                   livePrice = 0.0;
                   emaFast = 0.0;
                   emaSlow = 0.0;
-                  priceHistory.clear();
+                  m1Candles.clear();
+                  currentCandle = null;
                   bids.clear();
                   asks.clear();
+                  stableSignalCounter = 0;
+                  pendingSignal = "WAIT";
                 });
                 _startFeed();
               }
@@ -481,6 +597,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Котировки
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -501,25 +618,31 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
               ],
             ),
             const SizedBox(height: 14),
+
+            // Индикаторы M1
             Row(
               children: [
-                _buildBox("EMA 9", emaFast.toStringAsFixed(2), Colors.cyanAccent),
+                _buildBox("EMA 9 (M1)", emaFast.toStringAsFixed(2), Colors.cyanAccent),
                 const SizedBox(width: 8),
-                _buildBox("EMA 21", emaSlow.toStringAsFixed(2), Colors.amberAccent),
+                _buildBox("EMA 21 (M1)", emaSlow.toStringAsFixed(2), Colors.amberAccent),
                 const SizedBox(width: 8),
                 _buildBox("RSI 14", rsi.toStringAsFixed(1), rsi > 70 ? Colors.redAccent : (rsi < 30 ? Colors.greenAccent : Colors.white)),
               ],
             ),
-            const SizedBox(height: 14),
-            _buildTrendCard(),
-            const SizedBox(height: 12),
-            _buildOvernightCard(),
+            const SizedBox(height: 16),
+
+            // Торговый план: цель, временной горизонт и стоп
+            _buildTradePlanCard(),
             const SizedBox(height: 18),
+
+            // Стакан заявок (Level 2)
             const Text("ГЛУБИНА РЫНКА (LEVEL 2 • СТАКАН HKEX)", style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             _buildOrderBook(),
             const SizedBox(height: 20),
-            const Text("РЕКОМЕНДОВАННЫЕ DLC НА SGX (СОРТИРОВКА ПО ВЫГОДЕ)", style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
+
+            // Список рекомендованных DLC
+            const Text("ИНСТРУМЕНТЫ ДЛЯ СДЕЛКИ (SGX DLC)", style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ..._getRankedDlcs().map((d) => _buildDlcTile(d)).toList(),
           ],
@@ -528,49 +651,90 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
     );
   }
 
-  Widget _buildTrendCard() {
-    Color c = marketTrend == "STRONG BUY" ? const Color(0xFF00E676) : (marketTrend == "STRONG SELL" ? const Color(0xFFFF5252) : Colors.grey);
+  Widget _buildTradePlanCard() {
+    Color planColor = Colors.grey;
+    if (currentPlan.action.contains("CALL")) planColor = const Color(0xFF00E676);
+    if (currentPlan.action.contains("PUT")) planColor = const Color(0xFFFF5252);
+
+    final bool isActionable = currentPlan.action != "WAIT";
+
     return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: c.withOpacity(0.12), borderRadius: BorderRadius.circular(12), border: Border.all(color: c, width: 1.5)),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: planColor.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: planColor, width: 1.8),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("СИГНАЛ: $marketTrend", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: c)),
+              Text(
+                currentPlan.action,
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: planColor),
+              ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(color: isTrendAboveOnePercent ? Colors.green.withOpacity(0.2) : Colors.amber.withOpacity(0.2), borderRadius: BorderRadius.circular(6)),
-                child: Text(isTrendAboveOnePercent ? "ПОТЕНЦИАЛ >= 1.0%" : "ХОД < 1.0%", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: isTrendAboveOnePercent ? Colors.greenAccent : Colors.amberAccent)),
+                decoration: BoxDecoration(
+                  color: isActionable ? Colors.blue.withOpacity(0.2) : Colors.white10,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  currentPlan.timeHorizon,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: isActionable ? Colors.lightBlueAccent : Colors.white60,
+                  ),
+                ),
               )
             ],
           ),
-          const SizedBox(height: 4),
-          Text(isTrendAboveOnePercent ? "Запас движения базовой акции достаточен для покрытия спреда DLC." : "Волатильность мала. Вход не рекомендуется.", style: const TextStyle(fontSize: 12, color: Colors.white70)),
-        ],
-      ),
-    );
-  }
+          const Divider(color: Colors.white12, height: 20),
 
-  Widget _buildOvernightCard() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: canHoldOvernight ? Colors.blue.withOpacity(0.12) : const Color(0xFF161B22), borderRadius: BorderRadius.circular(10), border: Border.all(color: canHoldOvernight ? Colors.blueAccent : Colors.white12)),
-      child: Row(
-        children: [
-          Icon(canHoldOvernight ? Icons.nightlight_round : Icons.schedule, color: canHoldOvernight ? Colors.lightBlueAccent : Colors.white38, size: 22),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          if (isActionable) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(canHoldOvernight ? "ПЕРЕНОС (OVERNIGHT) ДОПУСТИМ" : "ПЕРЕНОС НЕ РЕКОМЕНДОВАН", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: canHoldOvernight ? Colors.lightBlueAccent : Colors.white54)),
-                Text(overnightStatus, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Цель базовой акции", style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    Text(
+                      "HK\$ ${currentPlan.targetStockPrice.toStringAsFixed(2)} (+${currentPlan.targetStockPercent}%)",
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    const Text("Цель по DLC (5x)", style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    Text(
+                      "+${currentPlan.targetDlcPercent.toStringAsFixed(1)}%",
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: planColor),
+                    ),
+                  ],
+                ),
               ],
             ),
-          )
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Допустимый стоп базового актива:", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                Text("-${currentPlan.stopLossStockPercent}%", style: const TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 6),
+          ],
+
+          Text(
+            currentPlan.rationale,
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
+          ),
         ],
       ),
     );
@@ -622,7 +786,9 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   }
 
   Widget _buildDlcTile(DlcInstrument dlc) {
-    final bool isPri = (marketTrend == "STRONG BUY" && dlc.direction == "LONG") || (marketTrend == "STRONG SELL" && dlc.direction == "SHORT");
+    final bool isPri = (currentPlan.action.contains("CALL") && dlc.direction == "LONG") ||
+        (currentPlan.action.contains("PUT") && dlc.direction == "SHORT");
+
     final Color c = dlc.direction == "LONG" ? const Color(0xFF00E676) : const Color(0xFFFF5252);
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -685,7 +851,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 2: ИЗБРАННОЕ (МУЛЬТИРЫНОК)
+// ЭКРАН 2: ИЗБРАННОЕ (WATCHLIST)
 // ---------------------------------------------------------------------------
 
 class WatchlistScreen extends StatefulWidget {
