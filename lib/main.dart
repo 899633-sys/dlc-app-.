@@ -75,7 +75,7 @@ class WatchlistQuote {
   final String market;
   final double price;
   final double changePercent;
-  final String sessionType; // "Regular", "HK Auction", "US Pre-market", "US After-hours"
+  final String sessionType;
   final String time;
 
   WatchlistQuote({
@@ -90,7 +90,7 @@ class WatchlistQuote {
 }
 
 // ---------------------------------------------------------------------------
-// НАВИГАЦИОННЫЙ КОНТЕЙНЕР (С НИЖНЕЙ ПАНЕЛЬЮ)
+// НАВИГАЦИОННЫЙ КОНТЕЙНЕР
 // ---------------------------------------------------------------------------
 
 class RootNavigationContainer extends StatefulWidget {
@@ -103,9 +103,8 @@ class RootNavigationContainer extends StatefulWidget {
 class _RootNavigationContainerState extends State<RootNavigationContainer> {
   int _currentIndex = 0;
 
-  // Список всех доступных акций для добавления
   final List<StockConfig> masterStockDirectory = [
-    // Гонконг (HKEX с поддержкой DLC на SGX)
+    // HKEX с DLC на SGX
     StockConfig(
       ticker: "0700.HK",
       name: "Tencent",
@@ -166,25 +165,23 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
         DlcInstrument(dlcTicker: "MZSW", name: "Xiaomi 5xS SG", direction: "SHORT", leverage: 5, bid: 0.110, ask: 0.115),
       ],
     ),
-    // США (US Equities - Pre/Post Market)
+    // US Stocks
     StockConfig(ticker: "TSLA", name: "Tesla Inc", qTicker: "s_usTSLA", market: "US"),
     StockConfig(ticker: "NVDA", name: "Nvidia", qTicker: "s_usNVDA", market: "US"),
     StockConfig(ticker: "AAPL", name: "Apple Inc", qTicker: "s_usAAPL", market: "US"),
     StockConfig(ticker: "BABA", name: "Alibaba US ADR", qTicker: "s_usBABA", market: "US"),
   ];
 
-  // Выбранные пользователем акции в избранном
   late List<StockConfig> userFavorites;
 
   @override
   void initState() {
     super.initState();
-    // По умолчанию добавляем 4 популярные бумаги
     userFavorites = [
-      masterStockDirectory[0], // 0700.HK
-      masterStockDirectory[1], // 9988.HK
-      masterStockDirectory[6], // TSLA
-      masterStockDirectory[7], // NVDA
+      masterStockDirectory[0],
+      masterStockDirectory[1],
+      masterStockDirectory[6],
+      masterStockDirectory[7],
     ];
   }
 
@@ -234,7 +231,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 1: СКАЛЬПЕР DLC (ОСНОВНОЙ ТЕРМИНАЛ)
+// ЭКРАН 1: СКАЛЬПЕР DLC
 // ---------------------------------------------------------------------------
 
 class DlcScalperScreen extends StatefulWidget {
@@ -271,6 +268,13 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
   Timer? _pollingTimer;
 
+  // Браузерные заголовки для обхода фильтров CDN Tencent
+  final Map<String, String> requestHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://finance.qq.com/',
+    'Accept': '*/*',
+  };
+
   @override
   void initState() {
     super.initState();
@@ -281,23 +285,35 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   void _startFeed() {
     _pollingTimer?.cancel();
     _fetchQuote();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) => _fetchQuote());
+    // Опрос каждые 800 мс для высокой точности
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 800), (_) => _fetchQuote());
   }
 
   Future<void> _fetchQuote() async {
     try {
       final url = Uri.parse("https://qt.gtimg.cn/q=${currentStock.qTicker}");
-      final res = await http.get(url).timeout(const Duration(seconds: 3));
+      final res = await http.get(url, headers: requestHeaders).timeout(const Duration(seconds: 3));
+
       if (res.statusCode == 200 && res.body.contains("~")) {
         _parseQuote(res.body);
       }
     } catch (_) {
-      setState(() => isMarketConnected = false);
+      // Запасной протокол http в случае сбоя SSL рукопожатия
+      try {
+        final fallbackUrl = Uri.parse("http://qt.gtimg.cn/q=${currentStock.qTicker}");
+        final res = await http.get(fallbackUrl, headers: requestHeaders).timeout(const Duration(seconds: 3));
+        if (res.statusCode == 200 && res.body.contains("~")) {
+          _parseQuote(res.body);
+        }
+      } catch (_) {
+        if (mounted) setState(() => isMarketConnected = false);
+      }
     }
   }
 
   void _parseQuote(String raw) {
     try {
+      if (!raw.contains('"')) return;
       final payload = raw.split('"')[1];
       final parts = payload.split('~');
       if (parts.length < 35) return;
@@ -321,6 +337,8 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         final v = int.tryParse(parts[10 + i * 2]) ?? 0;
         if (p > 0) tempBids.add(OrderBookEntry(p, v));
       }
+
+      if (!mounted) return;
 
       setState(() {
         isMarketConnected = true;
@@ -470,8 +488,8 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    Text("High: ${dayHigh.toStringAsFixed(2)}", style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
-                    Text("Low:  ${dayLow.toStringAsFixed(2)}", style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                    Text("High: ${dayHigh > 0 ? dayHigh.toStringAsFixed(2) : '--'}", style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
+                    Text("Low:  ${dayLow > 0 ? dayLow.toStringAsFixed(2) : '--'}", style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
                   ],
                 )
               ],
@@ -554,7 +572,13 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
   Widget _buildOrderBook() {
     if (bids.isEmpty && asks.isEmpty) {
-      return Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF161B22), borderRadius: BorderRadius.circular(12)), child: const Center(child: Text("Ожидание пакета стакана...", style: TextStyle(color: Colors.white38))));
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: const Color(0xFF161B22), borderRadius: BorderRadius.circular(12)),
+        child: const Center(
+          child: Text("Ожидание пакета стакана от HKEX...", style: TextStyle(color: Colors.white38)),
+        ),
+      );
     }
     return Container(
       padding: const EdgeInsets.all(12),
@@ -575,8 +599,14 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(i < bids.length ? "${bids[i].price.toStringAsFixed(2)}  (${bids[i].volume})" : "-", style: const TextStyle(fontSize: 12, color: Colors.white)),
-                  Text(i < asks.length ? "(${asks[i].volume})  ${asks[i].price.toStringAsFixed(2)}" : "-", style: const TextStyle(fontSize: 12, color: Colors.white)),
+                  Text(
+                    i < bids.length ? "${bids[i].price.toStringAsFixed(2)}  (${bids[i].volume})" : "-",
+                    style: const TextStyle(fontSize: 12, color: Colors.white),
+                  ),
+                  Text(
+                    i < asks.length ? "(${asks[i].volume})  ${asks[i].price.toStringAsFixed(2)}" : "-",
+                    style: const TextStyle(fontSize: 12, color: Colors.white),
+                  ),
                 ],
               ),
             ),
@@ -649,7 +679,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 2: ИЗБРАННОЕ С АУКЦИОНАМИ (HKEX) И ПРЕ/ПОСТ МАРКЕТОМ (US)
+// ЭКРАН 2: ИЗБРАННОЕ
 // ---------------------------------------------------------------------------
 
 class WatchlistScreen extends StatefulWidget {
@@ -671,7 +701,12 @@ class WatchlistScreen extends StatefulWidget {
 class _WatchlistScreenState extends State<WatchlistScreen> {
   Map<String, WatchlistQuote> liveQuotes = {};
   Timer? _timer;
-  bool isUpdating = false;
+
+  final Map<String, String> requestHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://finance.qq.com/',
+    'Accept': '*/*',
+  };
 
   @override
   void initState() {
@@ -685,67 +720,72 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     try {
       final queryParam = widget.favorites.map((e) => e.qTicker).join(',');
       final url = Uri.parse("https://qt.gtimg.cn/q=$queryParam");
-      final res = await http.get(url).timeout(const Duration(seconds: 4));
+      final res = await http.get(url, headers: requestHeaders).timeout(const Duration(seconds: 4));
 
       if (res.statusCode == 200) {
-        final lines = res.body.split(';');
-        final Map<String, WatchlistQuote> newQuotes = {};
-
-        for (final line in lines) {
-          if (!line.contains('="') || !line.contains('~')) continue;
-          final payload = line.split('="')[1];
-          final parts = payload.split('~');
-          if (parts.length < 5) continue;
-
-          // Определение рынка
-          final isUs = line.contains('us');
-          final ticker = parts[2];
-          final price = double.tryParse(parts[3]) ?? 0.0;
-          final changePercent = double.tryParse(parts[5]) ?? 0.0;
-          final timeStr = parts.length > 30 ? parts[30] : "";
-
-          // Определение торговой фазы (Аукционы / Pre / After)
-          String sessionType = "Regular";
-          if (!isUs) {
-            // HKEX: аукцион открытия 09:00-09:30, закрытия (CAS) 16:00-16:10
-            if (timeStr.length >= 4) {
-              final hhmm = int.tryParse(timeStr.substring(0, 4)) ?? 0;
-              if (hhmm >= 900 && hhmm < 930) {
-                sessionType = "HK Pre-Auction";
-              } else if (hhmm >= 1600 && hhmm <= 1610) {
-                sessionType = "HK Close-Auction";
-              }
-            }
-          } else {
-            // США: проверка времени по UTC/EST для определения пре- и постмаркета
-            final nowUtc = DateTime.now().toUtc();
-            // EST = UTC - 4 (летний) / UTC - 5 (зимний)
-            final estHour = (nowUtc.hour - 4) % 24;
-            if (estHour >= 4 && estHour < 9 || (estHour == 9 && nowUtc.minute < 30)) {
-              sessionType = "US Pre-Market";
-            } else if (estHour >= 16 && estHour < 20) {
-              sessionType = "US After-Hours";
-            }
-          }
-
-          newQuotes[ticker] = WatchlistQuote(
-            ticker: ticker,
-            name: parts[1],
-            market: isUs ? "US" : "HK",
-            price: price,
-            changePercent: changePercent,
-            sessionType: sessionType,
-            time: timeStr.length >= 6 ? "${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}" : "--:--",
-          );
+        _parseWatchlistBatch(res.body);
+      }
+    } catch (_) {
+      try {
+        final fallback = Uri.parse("http://qt.gtimg.cn/q=${widget.favorites.map((e) => e.qTicker).join(',')}");
+        final res = await http.get(fallback, headers: requestHeaders).timeout(const Duration(seconds: 4));
+        if (res.statusCode == 200) {
+          _parseWatchlistBatch(res.body);
         }
+      } catch (_) {}
+    }
+  }
 
-        if (mounted) {
-          setState(() {
-            liveQuotes = newQuotes;
-          });
+  void _parseWatchlistBatch(String body) {
+    final lines = body.split(';');
+    final Map<String, WatchlistQuote> newQuotes = {};
+
+    for (final line in lines) {
+      if (!line.contains('="') || !line.contains('~')) continue;
+      final payload = line.split('="')[1];
+      final parts = payload.split('~');
+      if (parts.length < 5) continue;
+
+      final isUs = line.contains('us');
+      final ticker = parts[2];
+      final price = double.tryParse(parts[3]) ?? 0.0;
+      final changePercent = double.tryParse(parts[5]) ?? 0.0;
+      final timeStr = parts.length > 30 ? parts[30] : "";
+
+      String sessionType = "Regular";
+      if (!isUs) {
+        if (timeStr.length >= 4) {
+          final hhmm = int.tryParse(timeStr.substring(0, 4)) ?? 0;
+          if (hhmm >= 900 && hhmm < 930) {
+            sessionType = "HK Pre-Auction";
+          } else if (hhmm >= 1600 && hhmm <= 1610) {
+            sessionType = "HK Close-Auction";
+          }
+        }
+      } else {
+        final nowUtc = DateTime.now().toUtc();
+        final estHour = (nowUtc.hour - 4) % 24;
+        if (estHour >= 4 && estHour < 9 || (estHour == 9 && nowUtc.minute < 30)) {
+          sessionType = "US Pre-Market";
+        } else if (estHour >= 16 && estHour < 20) {
+          sessionType = "US After-Hours";
         }
       }
-    } catch (_) {}
+
+      newQuotes[ticker] = WatchlistQuote(
+        ticker: ticker,
+        name: parts[1],
+        market: isUs ? "US" : "HK",
+        price: price,
+        changePercent: changePercent,
+        sessionType: sessionType,
+        time: timeStr.length >= 6 ? "${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}" : "--:--",
+      );
+    }
+
+    if (mounted) {
+      setState(() => liveQuotes = newQuotes);
+    }
   }
 
   void _showAddStockDialog() {
@@ -840,7 +880,6 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
               itemCount: widget.favorites.length,
               itemBuilder: (context, index) {
                 final stock = widget.favorites[index];
-                // Ищем по очищенному коду (например, "00700" или "TSLA")
                 final cleanTicker = stock.ticker.replaceAll(".HK", "");
                 final quote = liveQuotes[cleanTicker] ?? liveQuotes[stock.ticker];
 
