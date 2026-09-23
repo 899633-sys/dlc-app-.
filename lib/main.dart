@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const DlcScalperApp());
@@ -12,7 +12,7 @@ class DlcScalperApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'HKEX DLC Scalper',
+      title: 'HKEX-SGX DLC Terminal',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0D1117),
@@ -27,19 +27,31 @@ class DlcScalperApp extends StatelessWidget {
 // МОДЕЛИ ДАННЫХ
 // ---------------------------------------------------------------------------
 
-class DlcProduct {
+class StockConfig {
+  final String ticker;
+  final String name;
+  final String qTicker; // Тикер для шлюза gtimg (например, r_hk00700)
+  final List<DlcInstrument> dlcList;
+
+  StockConfig({
+    required this.ticker,
+    required this.name,
+    required this.qTicker,
+    required this.dlcList,
+  });
+}
+
+class DlcInstrument {
   final String dlcTicker;
-  final String underlyingTicker;
-  final String dlcName;
-  final String direction;
+  final String name;
+  final String direction; // "LONG" или "SHORT"
   final int leverage;
   final double bid;
   final double ask;
 
-  DlcProduct({
+  DlcInstrument({
     required this.dlcTicker,
-    required this.underlyingTicker,
-    required this.dlcName,
+    required this.name,
     required this.direction,
     required this.leverage,
     required this.bid,
@@ -49,22 +61,10 @@ class DlcProduct {
   double get spreadPercent => ask > 0 ? ((ask - bid) / ask) * 100 : 0.0;
 }
 
-enum ExitUrgency { none, warning, takeProfit, stopLoss }
-
-class ExitDecision {
-  final ExitUrgency urgency;
-  final String title;
-  final String reason;
-  final double suggestedExitPrice;
-  final double currentProfitPercent;
-
-  ExitDecision({
-    required this.urgency,
-    required this.title,
-    required this.reason,
-    required this.suggestedExitPrice,
-    required this.currentProfitPercent,
-  });
+class OrderBookEntry {
+  final double price;
+  final int volume;
+  OrderBookEntry(this.price, this.volume);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,93 +79,180 @@ class MainScalperScreen extends StatefulWidget {
 }
 
 class _MainScalperScreenState extends State<MainScalperScreen> {
-  final String stockTicker = "0700.HK";
-  double stockPrice = 382.40;
-  double emaFast = 382.40;
-  double emaSlow = 382.40;
+  // Список базовых активов HKEX, имеющих популярные DLC на SGX
+  final List<StockConfig> supportedStocks = [
+    StockConfig(
+      ticker: "0700.HK",
+      name: "Tencent Holdings",
+      qTicker: "r_hk00700",
+      dlcList: [
+        DlcInstrument(dlcTicker: "WK4W", name: "Tencent 5xL SG", direction: "LONG", leverage: 5, bid: 0.420, ask: 0.425),
+        DlcInstrument(dlcTicker: "JLZW", name: "Tencent 5xS SG", direction: "SHORT", leverage: 5, bid: 0.310, ask: 0.315),
+      ],
+    ),
+    StockConfig(
+      ticker: "9988.HK",
+      name: "Alibaba Group",
+      qTicker: "r_hk09988",
+      dlcList: [
+        DlcInstrument(dlcTicker: "BSIW", name: "Alibaba 5xL SG", direction: "LONG", leverage: 5, bid: 0.510, ask: 0.515),
+        DlcInstrument(dlcTicker: "PZLW", name: "Alibaba 5xS SG", direction: "SHORT", leverage: 5, bid: 0.650, ask: 0.660),
+      ],
+    ),
+    StockConfig(
+      ticker: "3690.HK",
+      name: "Meituan",
+      qTicker: "r_hk03690",
+      dlcList: [
+        DlcInstrument(dlcTicker: "MBMW", name: "Meituan 5xL SG", direction: "LONG", leverage: 5, bid: 0.380, ask: 0.385),
+        DlcInstrument(dlcTicker: "MBSW", name: "Meituan 5xS SG", direction: "SHORT", leverage: 5, bid: 0.440, ask: 0.445),
+      ],
+    ),
+    StockConfig(
+      ticker: "0175.HK",
+      name: "Geely Automobile",
+      qTicker: "r_hk00175",
+      dlcList: [
+        DlcInstrument(dlcTicker: "GLYW", name: "Geely 5xL SG", direction: "LONG", leverage: 5, bid: 0.280, ask: 0.285),
+        DlcInstrument(dlcTicker: "GYSW", name: "Geely 5xS SG", direction: "SHORT", leverage: 5, bid: 0.350, ask: 0.360),
+      ],
+    ),
+    StockConfig(
+      ticker: "1211.HK",
+      name: "BYD Company",
+      qTicker: "r_hk01211",
+      dlcList: [
+        DlcInstrument(dlcTicker: "BYDW", name: "BYD 5xL SG", direction: "LONG", leverage: 5, bid: 0.620, ask: 0.630),
+        DlcInstrument(dlcTicker: "BYEW", name: "BYD 5xS SG", direction: "SHORT", leverage: 5, bid: 0.290, ask: 0.295),
+      ],
+    ),
+    StockConfig(
+      ticker: "1810.HK",
+      name: "Xiaomi Corp",
+      qTicker: "r_hk01810",
+      dlcList: [
+        DlcInstrument(dlcTicker: "MZNW", name: "Xiaomi 5xL SG", direction: "LONG", leverage: 5, bid: 0.045, ask: 0.046),
+        DlcInstrument(dlcTicker: "MZSW", name: "Xiaomi 5xS SG", direction: "SHORT", leverage: 5, bid: 0.110, ask: 0.115),
+      ],
+    ),
+  ];
+
+  late StockConfig currentStock;
+  double livePrice = 0.0;
+  double previousClose = 0.0;
+  double dayHigh = 0.0;
+  double dayLow = 0.0;
+  String updateTimestamp = "--:--:--";
+  bool isMarketConnected = false;
+
+  // Индикаторы
+  double emaFast = 0.0; // EMA 9
+  double emaSlow = 0.0; // EMA 21
   final double alphaFast = 2 / (9 + 1);
   final double alphaSlow = 2 / (21 + 1);
   final List<double> priceHistory = [];
   double rsi = 50.0;
 
-  final List<DlcProduct> dlcCatalog = [
-    DlcProduct(
-      dlcTicker: "WK4W",
-      underlyingTicker: "0700.HK",
-      dlcName: "Tencent 5xLongSG28",
-      direction: "LONG",
-      leverage: 5,
-      bid: 0.420,
-      ask: 0.425,
-    ),
-    DlcProduct(
-      dlcTicker: "JLZW",
-      underlyingTicker: "0700.HK",
-      dlcName: "Tencent 5xShortSG28",
-      direction: "SHORT",
-      leverage: 5,
-      bid: 0.310,
-      ask: 0.315,
-    ),
-  ];
+  // Стакан (Level 2)
+  List<OrderBookEntry> bids = [];
+  List<OrderBookEntry> asks = [];
 
-  DlcProduct? recommendedDlc;
+  // Анализ тренда и потенциала
   String marketTrend = "WAIT";
+  double trendStrengthPercent = 0.0;
+  bool isTrendAboveOnePercent = false;
+  bool canHoldOvernight = false;
+  String overnightStatus = "";
 
-  bool isPositionOpen = false;
-  DlcProduct? activeDlc;
-  double positionEntryPrice = 0.0;
-  double activeDlcCurrentBid = 0.0;
-  double positionPeakPrice = 0.0;
-  ExitDecision? currentExitDecision;
-
-  Timer? _liveFeedTimer;
+  Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
-    _startMarketSimulation();
+    currentStock = supportedStocks.first;
+    _startLiveStockFeed();
   }
 
-  void _startMarketSimulation() {
-    _liveFeedTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) {
-      final random = Random();
-      final delta = (random.nextDouble() - 0.48) * 0.45;
-      final newStockPrice = double.parse((stockPrice + delta).toStringAsFixed(2));
-
-      _processNewTick(newStockPrice);
-    });
+  void _startLiveStockFeed() {
+    _pollingTimer?.cancel();
+    _fetchRealMarketQuote();
+    // Опрашиваем котировки шлюза раз в 2 секунды
+    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) => _fetchRealMarketQuote());
   }
 
-  void _processNewTick(double newPrice) {
-    setState(() {
-      stockPrice = newPrice;
+  Future<void> _fetchRealMarketQuote() async {
+    try {
+      final url = Uri.parse("https://qt.gtimg.cn/q=${currentStock.qTicker}");
+      final response = await http.get(url).timeout(const Duration(seconds: 3));
 
-      emaFast = (stockPrice * alphaFast) + (emaFast * (1 - alphaFast));
-      emaSlow = (stockPrice * alphaSlow) + (emaSlow * (1 - alphaSlow));
+      if (response.statusCode == 200 && response.body.contains("~")) {
+        _parseQuoteString(response.body);
+      }
+    } catch (_) {
+      setState(() => isMarketConnected = false);
+    }
+  }
 
-      priceHistory.add(stockPrice);
-      if (priceHistory.length > 14) {
-        priceHistory.removeAt(0);
-        _calcRsi();
+  void _parseQuoteString(String rawData) {
+    try {
+      final payload = rawData.split('"')[1];
+      final parts = payload.split('~');
+      if (parts.length < 35) return;
+
+      final current = double.tryParse(parts[3]) ?? 0.0;
+      final prev = double.tryParse(parts[4]) ?? 0.0;
+      final high = double.tryParse(parts[33]) ?? 0.0;
+      final low = double.tryParse(parts[34]) ?? 0.0;
+      final timeStr = parts.length > 30 ? parts[30] : "";
+
+      // Парсинг стакана (5 уровней)
+      final List<OrderBookEntry> tempBids = [];
+      final List<OrderBookEntry> tempAsks = [];
+
+      // Ask 1..5: индексы 19, 21, 23, 25, 27 (цены) и 20, 22, 24, 26, 28 (объемы)
+      for (int i = 0; i < 5; i++) {
+        final p = double.tryParse(parts[19 + i * 2]) ?? 0.0;
+        final v = int.tryParse(parts[20 + i * 2]) ?? 0;
+        if (p > 0) tempAsks.add(OrderBookEntry(p, v));
       }
 
-      if (emaFast > emaSlow && rsi < 70) {
-        marketTrend = "STRONG BUY";
-        recommendedDlc = dlcCatalog.firstWhere((d) => d.direction == "LONG");
-      } else if (emaFast < emaSlow && rsi > 30) {
-        marketTrend = "STRONG SELL";
-        recommendedDlc = dlcCatalog.firstWhere((d) => d.direction == "SHORT");
-      } else {
-        marketTrend = "WAIT";
+      // Bid 1..5: индексы 9, 11, 13, 15, 17 (цены) и 10, 12, 14, 16, 18 (объемы)
+      for (int i = 0; i < 5; i++) {
+        final p = double.tryParse(parts[9 + i * 2]) ?? 0.0;
+        final v = int.tryParse(parts[10 + i * 2]) ?? 0;
+        if (p > 0) tempBids.add(OrderBookEntry(p, v));
       }
 
-      _updateDlcPrices();
+      setState(() {
+        isMarketConnected = true;
+        livePrice = current;
+        previousClose = prev;
+        dayHigh = high;
+        dayLow = low;
+        bids = tempBids;
+        asks = tempAsks;
+        if (timeStr.length >= 6) {
+          updateTimestamp = "${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}";
+        }
 
-      if (isPositionOpen && activeDlc != null) {
-        _evaluateExitStrategy();
-      }
-    });
+        // Обновление индикаторов
+        if (emaFast == 0.0) {
+          emaFast = livePrice;
+          emaSlow = livePrice;
+        } else {
+          emaFast = (livePrice * alphaFast) + (emaFast * (1 - alphaFast));
+          emaSlow = (livePrice * alphaSlow) + (emaSlow * (1 - alphaSlow));
+        }
+
+        priceHistory.add(livePrice);
+        if (priceHistory.length > 14) {
+          priceHistory.removeAt(0);
+          _calcRsi();
+        }
+
+        _evaluateTrendAndPotential();
+      });
+    } catch (_) {}
   }
 
   void _calcRsi() {
@@ -184,124 +271,129 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
     rsi = 100 - (100 / (1 + rs));
   }
 
-  void _updateDlcPrices() {
-    if (isPositionOpen && activeDlc != null) {
-      final diffStockPercent = ((stockPrice - emaSlow) / emaSlow);
-      final leverageMultiplier = activeDlc!.direction == "LONG" ? 5 : -5;
+  void _evaluateTrendAndPotential() {
+    if (emaSlow == 0.0) return;
 
-      activeDlcCurrentBid = double.parse(
-        (positionEntryPrice * (1 + (diffStockPercent * leverageMultiplier * 0.05))).toStringAsFixed(3),
-      );
+    // Расстояние между быстрой и медленной EMA как сила текущего импульса
+    final distancePercent = ((emaFast - emaSlow).abs() / emaSlow) * 100;
+    trendStrengthPercent = distancePercent;
 
-      if (activeDlcCurrentBid > positionPeakPrice) {
-        positionPeakPrice = activeDlcCurrentBid;
-      }
+    // Оценка тренда
+    if (emaFast > emaSlow && rsi < 70) {
+      marketTrend = "STRONG BUY";
+    } else if (emaFast < emaSlow && rsi > 30) {
+      marketTrend = "STRONG SELL";
+    } else {
+      marketTrend = "WAIT";
+    }
+
+    // Проверка потенциала движения:
+    // Потенциал >= 1% считается выполненным, если дневной диапазон (High - Low)
+    // и текущий направленный импульс дают пространство хода не менее 1.0%
+    final dayRangePercent = livePrice > 0 ? ((dayHigh - dayLow) / livePrice) * 100 : 0.0;
+    isTrendAboveOnePercent = (distancePercent >= 0.25) || (dayRangePercent >= 1.2 && marketTrend != "WAIT");
+
+    // Оценка возможности переноса позиции на ночь (Overnight Hold)
+    // Для переноса тренд должен быть уверенным, без перекупленности/перепроданности по RSI
+    if (marketTrend == "STRONG BUY" && rsi >= 45 && rsi <= 65 && distancePercent >= 0.3) {
+      canHoldOvernight = true;
+      overnightStatus = "Тренд устойчивый. Допустим перенос на следующий день (Swing).";
+    } else if (marketTrend == "STRONG SELL" && rsi <= 55 && rsi >= 35 && distancePercent >= 0.3) {
+      canHoldOvernight = true;
+      overnightStatus = "Медвежий тренд стабилен. Допустим овернайт для Short DLC.";
+    } else {
+      canHoldOvernight = false;
+      overnightStatus = "Только внутри дня (Intraday). Высокий риск отката на открытии завтра.";
     }
   }
 
-  void _evaluateExitStrategy() {
-    final profitPercent = ((activeDlcCurrentBid - positionEntryPrice) / positionEntryPrice) * 100;
-    final trailingCutoff = positionPeakPrice * 0.97;
+  List<DlcInstrument> _getRankedDlcList() {
+    final list = List<DlcInstrument>.from(currentStock.dlcList);
 
-    if (positionPeakPrice > positionEntryPrice * 1.03 && activeDlcCurrentBid <= trailingCutoff) {
-      currentExitDecision = ExitDecision(
-        urgency: ExitUrgency.takeProfit,
-        title: "СБРОС ПО ТРЕЙЛИНГУ",
-        reason: "Откат на 3% от пика S\$${positionPeakPrice.toStringAsFixed(3)}. Фиксируйте прибыль.",
-        suggestedExitPrice: activeDlcCurrentBid,
-        currentProfitPercent: profitPercent,
-      );
-      return;
-    }
+    // Сортировка:
+    // 1. По совпадению с направлением тренда (BUY -> Long DLC наверх, SELL -> Short DLC наверх)
+    // 2. Внутри группы — по минимальному спреду (самые ликвидные и выгодные выше)
+    list.sort((a, b) {
+      final bool aMatches = (marketTrend == "STRONG BUY" && a.direction == "LONG") ||
+          (marketTrend == "STRONG SELL" && a.direction == "SHORT");
+      final bool bMatches = (marketTrend == "STRONG BUY" && b.direction == "LONG") ||
+          (marketTrend == "STRONG SELL" && b.direction == "SHORT");
 
-    if (profitPercent <= -4.0) {
-      currentExitDecision = ExitDecision(
-        urgency: ExitUrgency.stopLoss,
-        title: "СТОП-ЛОСС (-4%)",
-        reason: "Импульс сломался. Режьте убыток для сохранения капитала.",
-        suggestedExitPrice: activeDlcCurrentBid,
-        currentProfitPercent: profitPercent,
-      );
-      return;
-    }
+      if (aMatches && !bMatches) return -1;
+      if (!aMatches && bMatches) return 1;
 
-    if (activeDlc!.direction == "LONG" && rsi > 72) {
-      currentExitDecision = ExitDecision(
-        urgency: ExitUrgency.takeProfit,
-        title: "ИМПУЛЬС ИССЯК (RSI > 72)",
-        reason: "Акция перекуплена. Высокий риск резкого отката.",
-        suggestedExitPrice: activeDlcCurrentBid,
-        currentProfitPercent: profitPercent,
-      );
-      return;
-    } else if (activeDlc!.direction == "SHORT" && rsi < 28) {
-      currentExitDecision = ExitDecision(
-        urgency: ExitUrgency.takeProfit,
-        title: "ИМПУЛЬС ИССЯК (RSI < 28)",
-        reason: "Акция перепродана. Вероятен отскок цены вверх.",
-        suggestedExitPrice: activeDlcCurrentBid,
-        currentProfitPercent: profitPercent,
-      );
-      return;
-    }
-
-    currentExitDecision = ExitDecision(
-      urgency: ExitUrgency.none,
-      title: "ДЕРЖИМ ПОЗИЦИЮ",
-      reason: "Тренд в силе, импульс продолжается.",
-      suggestedExitPrice: activeDlcCurrentBid,
-      currentProfitPercent: profitPercent,
-    );
-  }
-
-  void _openPosition(DlcProduct dlc) {
-    setState(() {
-      isPositionOpen = true;
-      activeDlc = dlc;
-      positionEntryPrice = dlc.ask;
-      activeDlcCurrentBid = dlc.ask;
-      positionPeakPrice = dlc.ask;
-      currentExitDecision = null;
+      return a.spreadPercent.compareTo(b.spreadPercent);
     });
-  }
 
-  void _closePosition() {
-    setState(() {
-      isPositionOpen = false;
-      activeDlc = null;
-      currentExitDecision = null;
-    });
+    return list;
   }
 
   @override
   void dispose() {
-    _liveFeedTimer?.cancel();
+    _pollingTimer?.cancel();
     super.dispose();
   }
 
   // ---------------------------------------------------------------------------
-  // ВИДЖЕТЫ
+  // ИНТЕРФЕЙС
   // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
-    Color trendColor = Colors.grey;
-    if (marketTrend == "STRONG BUY") trendColor = const Color(0xFF00E676);
-    if (marketTrend == "STRONG SELL") trendColor = const Color(0xFFFF5252);
+    final double changePercent = previousClose > 0 ? ((livePrice - previousClose) / previousClose) * 100 : 0.0;
+    final Color priceColor = changePercent >= 0 ? const Color(0xFF00E676) : const Color(0xFFFF5252);
+    final rankedDlcs = _getRankedDlcList();
 
     return Scaffold(
       appBar: AppBar(
-        title: Text("Scalp Engine: $stockTicker"),
         backgroundColor: const Color(0xFF161B22),
         elevation: 0,
+        title: DropdownButtonHideUnderline(
+          child: DropdownButton<StockConfig>(
+            value: currentStock,
+            dropdownColor: const Color(0xFF161B22),
+            icon: const Icon(Icons.arrow_drop_down, color: Colors.cyanAccent),
+            items: supportedStocks.map((stock) {
+              return DropdownMenuItem<StockConfig>(
+                value: stock,
+                child: Text(
+                  "${stock.ticker} (${stock.name})",
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              );
+            }).toList(),
+            onChanged: (newStock) {
+              if (newStock != null) {
+                setState(() {
+                  currentStock = newStock;
+                  livePrice = 0.0;
+                  emaFast = 0.0;
+                  emaSlow = 0.0;
+                  priceHistory.clear();
+                  bids.clear();
+                  asks.clear();
+                });
+                _startLiveStockFeed();
+              }
+            },
+          ),
+        ),
         actions: [
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Text(
-                "HK\$ ${stockPrice.toStringAsFixed(2)}",
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
+          Padding(
+            padding: const EdgeInsets.only(right: 14),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.circle,
+                  size: 10,
+                  color: isMarketConnected ? Colors.greenAccent : Colors.orangeAccent,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  updateTimestamp,
+                  style: const TextStyle(fontSize: 12, color: Colors.white60),
+                )
+              ],
             ),
           )
         ],
@@ -311,82 +403,281 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Текущая цена и диапазон дня
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      livePrice > 0 ? "HK\$ ${livePrice.toStringAsFixed(2)}" : "Загрузка...",
+                      style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      "${changePercent >= 0 ? '+' : ''}${changePercent.toStringAsFixed(2)}% к пред. закрытию",
+                      style: TextStyle(color: priceColor, fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text("High: ${dayHigh.toStringAsFixed(2)}", style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
+                    Text("Low:  ${dayLow.toStringAsFixed(2)}", style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                  ],
+                )
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // Индикаторы
             Row(
               children: [
                 _buildMetricBox("EMA 9", emaFast.toStringAsFixed(2), Colors.cyanAccent),
                 const SizedBox(width: 8),
                 _buildMetricBox("EMA 21", emaSlow.toStringAsFixed(2), Colors.amberAccent),
                 const SizedBox(width: 8),
-                _buildMetricBox("RSI (14)", rsi.toStringAsFixed(1), rsi > 70 ? Colors.redAccent : (rsi < 30 ? Colors.greenAccent : Colors.white)),
+                _buildMetricBox("RSI 14", rsi.toStringAsFixed(1), rsi > 70 ? Colors.redAccent : (rsi < 30 ? Colors.greenAccent : Colors.white)),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
 
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: trendColor.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: trendColor, width: 1.5),
+            // Карточка анализа тренда и фильтра 1%
+            _buildTrendStatusCard(),
+            const SizedBox(height: 12),
+
+            // Оценка овернайта (перенос на след. день)
+            _buildOvernightBanner(),
+            const SizedBox(height: 18),
+
+            // Стакан заявок (Level 2)
+            const Text(
+              "ГЛУБИНА РЫНКА (LEVEL 2 • СТАКАН HKEX)",
+              style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            _buildOrderBook(),
+            const SizedBox(height: 20),
+
+            // Ранжированный список DLC
+            const Text(
+              "РЕКОМЕНДОВАННЫЕ DLC НА SGX (СОРТИРОВКА ПО ВЫГОДЕ И СПРЕДУ)",
+              style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            ...rankedDlcs.map((dlc) => _buildDlcCard(dlc)).toList(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrendStatusCard() {
+    Color cardColor = Colors.grey;
+    if (marketTrend == "STRONG BUY") cardColor = const Color(0xFF00E676);
+    if (marketTrend == "STRONG SELL") cardColor = const Color(0xFFFF5252);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: cardColor.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cardColor, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "СИГНАЛ: $marketTrend",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: cardColor),
               ),
-              child: Row(
-                children: [
-                  Icon(
-                    marketTrend == "STRONG BUY"
-                        ? Icons.trending_up
-                        : (marketTrend == "STRONG SELL" ? Icons.trending_down : Icons.pause),
-                    color: trendColor,
-                    size: 30,
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isTrendAboveOnePercent ? Colors.green.withOpacity(0.2) : Colors.amber.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  isTrendAboveOnePercent ? "ПОТЕНЦИАЛ >= 1.0% ПОДТВЕРЖДЕН" : "ХОД < 1.0% (СПРЕД СЪЕСТ ПРИБЫЛЬ)",
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: isTrendAboveOnePercent ? Colors.greenAccent : Colors.amberAccent,
                   ),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        "ТРЕНД АКЦИИ: $marketTrend",
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: trendColor),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        marketTrend == "STRONG BUY"
-                            ? "Быстрая средняя выше медленной, импульс вверх"
-                            : (marketTrend == "STRONG SELL" ? "Импульс вниз, давление продавцов" : "Боковик, ждем импульса"),
-                        style: const TextStyle(fontSize: 12, color: Colors.white60),
-                      )
-                    ],
-                  )
+                ),
+              )
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isTrendAboveOnePercent
+                ? "Запас движения базовой акции достаточен для покрытия спреда DLC с плечом."
+                : "Волатильность или разрыв средних слишком малы. Вход не рекомендуется.",
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOvernightBanner() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: canHoldOvernight ? Colors.blue.withOpacity(0.12) : const Color(0xFF161B22),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: canHoldOvernight ? Colors.blueAccent : Colors.white12),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            canHoldOvernight ? Icons.nightlight_round : Icons.schedule,
+            color: canHoldOvernight ? Colors.lightBlueAccent : Colors.white38,
+            size: 22,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  canHoldOvernight ? "ПЕРЕНОС НА СЛЕДУЮЩИЙ ДЕНЬ ДОПУСТИМ" : "ПЕРЕНОС (OVERNIGHT) НЕ РЕКОМЕНДОВАН",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                    color: canHoldOvernight ? Colors.lightBlueAccent : Colors.white54,
+                  ),
+                ),
+                Text(overnightStatus, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOrderBook() {
+    if (bids.isEmpty && asks.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: const Color(0xFF161B22), borderRadius: BorderRadius.circular(12)),
+        child: const Center(child: Text("Ожидание пакета стакана от HKEX...", style: TextStyle(color: Colors.white38))),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161B22),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        children: [
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("BID (ПОКУПКА)", style: TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+              Text("ASK (ПРОДАЖА)", style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const Divider(color: Colors.white10, height: 12),
+          for (int i = 0; i < 5; i++)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    i < bids.length ? "${bids[i].price.toStringAsFixed(2)}  (${bids[i].volume})" : "-",
+                    style: const TextStyle(fontSize: 12, color: Colors.white),
+                  ),
+                  Text(
+                    i < asks.length ? "(${asks[i].volume})  ${asks[i].price.toStringAsFixed(2)}" : "-",
+                    style: const TextStyle(fontSize: 12, color: Colors.white),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
 
-            if (isPositionOpen && activeDlc != null) ...[
-              const Text("ОТКРЫТАЯ ПОЗИЦИЯ DLC", style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              _buildActivePositionCard(),
-              const SizedBox(height: 12),
-              if (currentExitDecision != null && currentExitDecision!.urgency != ExitUrgency.none)
-                _buildExitBanner(currentExitDecision!),
-            ] else ...[
-              const Text("РЕКОМЕНДАЦИЯ К ПОКУПКЕ (SOCGEN SGX)", style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              if (recommendedDlc != null && marketTrend != "WAIT")
-                _buildRecommendationCard(recommendedDlc!)
-              else
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF161B22),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Center(
-                    child: Text("Ожидание четкого импульса для подбора DLC...", style: TextStyle(color: Colors.white38)),
-                  ),
-                ),
-            ],
-          ],
+  Widget _buildDlcCard(DlcInstrument dlc) {
+    final bool isPrioritized = (marketTrend == "STRONG BUY" && dlc.direction == "LONG") ||
+        (marketTrend == "STRONG SELL" && dlc.direction == "SHORT");
+
+    final Color directionColor = dlc.direction == "LONG" ? const Color(0xFF00E676) : const Color(0xFFFF5252);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isPrioritized ? const Color(0xFF1E2633) : const Color(0xFF161B22),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isPrioritized ? directionColor.withOpacity(0.8) : Colors.white12,
+          width: isPrioritized ? 1.5 : 1.0,
         ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    dlc.dlcTicker,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: directionColor.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      "${dlc.leverage}x ${dlc.direction}",
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: directionColor),
+                    ),
+                  ),
+                  if (isPrioritized) ...[
+                    const SizedBox(width: 6),
+                    const Icon(Icons.star, color: Colors.amberAccent, size: 16),
+                  ]
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(dlc.name, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            ],
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                "Ask: S\$ ${dlc.ask.toStringAsFixed(3)}",
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                "Спред: ${dlc.spreadPercent.toStringAsFixed(2)}%",
+                style: TextStyle(
+                  fontSize: 11,
+                  color: dlc.spreadPercent <= 1.2 ? Colors.greenAccent : Colors.orangeAccent,
+                ),
+              ),
+            ],
+          )
+        ],
       ),
     );
   }
@@ -394,7 +685,7 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
   Widget _buildMetricBox(String label, String value, Color color) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
         decoration: BoxDecoration(
           color: const Color(0xFF161B22),
           borderRadius: BorderRadius.circular(10),
@@ -407,155 +698,6 @@ class _MainScalperScreenState extends State<MainScalperScreen> {
             Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildRecommendationCard(DlcProduct dlc) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF161B22),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                "${dlc.dlcTicker} • ${dlc.leverage}x ${dlc.direction}",
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: dlc.direction == "LONG" ? Colors.green.withOpacity(0.2) : Colors.red.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  "СПРЕД ${dlc.spreadPercent.toStringAsFixed(2)}%",
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: dlc.direction == "LONG" ? Colors.greenAccent : Colors.redAccent,
-                  ),
-                ),
-              )
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(dlc.dlcName, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          const Divider(color: Colors.white10, height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text("Цена Ask (SGX)", style: TextStyle(color: Colors.white38, fontSize: 11)),
-                  Text("S\$ ${dlc.ask.toStringAsFixed(3)}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ],
-              ),
-              ElevatedButton.icon(
-                onPressed: () => _openPosition(dlc),
-                icon: const Icon(Icons.flash_on, size: 18),
-                label: const Text("ВОЙТИ В СДЕЛКУ"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: dlc.direction == "LONG" ? const Color(0xFF00E676) : const Color(0xFFFF5252),
-                  foregroundColor: Colors.black,
-                  textStyle: const TextStyle(fontWeight: FontWeight.bold),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-              )
-            ],
-          )
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActivePositionCard() {
-    final profit = ((activeDlcCurrentBid - positionEntryPrice) / positionEntryPrice) * 100;
-    final profitColor = profit >= 0 ? const Color(0xFF00E676) : const Color(0xFFFF5252);
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF161B22),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: profitColor.withOpacity(0.6), width: 1.5),
-      ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text("${activeDlc!.dlcTicker} (${activeDlc!.direction})", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              Text(
-                "${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}%",
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: profitColor),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text("Вход: S\$ ${positionEntryPrice.toStringAsFixed(3)}", style: const TextStyle(color: Colors.white60)),
-              Text("Текущий Bid: S\$ ${activeDlcCurrentBid.toStringAsFixed(3)}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              Text("Пик: S\$ ${positionPeakPrice.toStringAsFixed(3)}", style: const TextStyle(color: Colors.amberAccent)),
-            ],
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton(
-              onPressed: _closePosition,
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.white30),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-              child: const Text("ЗАКРЫТЬ ПОЗИЦИЮ ВРУЧНУЮ"),
-            ),
-          )
-        ],
-      ),
-    );
-  }
-
-  Widget _buildExitBanner(ExitDecision decision) {
-    Color bannerColor = decision.urgency == ExitUrgency.takeProfit ? const Color(0xFF00E676) : const Color(0xFFFF1744);
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: bannerColor.withOpacity(0.18),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: bannerColor, width: 2),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(decision.urgency == ExitUrgency.takeProfit ? Icons.check_circle : Icons.warning_rounded, color: bannerColor, size: 32),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(decision.title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: bannerColor)),
-                const SizedBox(height: 4),
-                Text(decision.reason, style: const TextStyle(fontSize: 13, color: Colors.white70)),
-                const SizedBox(height: 6),
-                Text("Выход по рынку: S\$ ${decision.suggestedExitPrice.toStringAsFixed(3)}", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          )
-        ],
       ),
     );
   }
