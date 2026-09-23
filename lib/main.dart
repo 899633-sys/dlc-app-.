@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
 void main() {
   runApp(const DlcScalperApp());
@@ -25,21 +26,21 @@ class DlcScalperApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// МОДЕЛИ ДАННЫХ
+// МОДЕЛИ
 // ---------------------------------------------------------------------------
 
 class StockConfig {
   final String ticker;
   final String name;
-  final String eastmoneySecId; // Формат Eastmoney HK: 116.00700
-  final String qTicker;        // Формат для Watchlist
+  final String sinaTicker; // Формат Sina HK: rt_hk00700
+  final String qTicker;    // Формат Tencent для Watchlist
   final String market;
   final List<DlcInstrument> dlcList;
 
   StockConfig({
     required this.ticker,
     required this.name,
-    required this.eastmoneySecId,
+    required this.sinaTicker,
     required this.qTicker,
     this.market = "HK",
     this.dlcList = const [],
@@ -146,7 +147,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "0700.HK",
       name: "Tencent",
-      eastmoneySecId: "116.00700",
+      sinaTicker: "rt_hk00700",
       qTicker: "r_hk00700",
       market: "HK",
       dlcList: [
@@ -157,7 +158,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "9988.HK",
       name: "Alibaba HK",
-      eastmoneySecId: "116.09988",
+      sinaTicker: "rt_hk09988",
       qTicker: "r_hk09988",
       market: "HK",
       dlcList: [
@@ -168,7 +169,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "3690.HK",
       name: "Meituan",
-      eastmoneySecId: "116.03690",
+      sinaTicker: "rt_hk03690",
       qTicker: "r_hk03690",
       market: "HK",
       dlcList: [
@@ -179,7 +180,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "0175.HK",
       name: "Geely Auto",
-      eastmoneySecId: "116.00175",
+      sinaTicker: "rt_hk00175",
       qTicker: "r_hk00175",
       market: "HK",
       dlcList: [
@@ -190,7 +191,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "1211.HK",
       name: "BYD Company",
-      eastmoneySecId: "116.01211",
+      sinaTicker: "rt_hk01211",
       qTicker: "r_hk01211",
       market: "HK",
       dlcList: [
@@ -201,7 +202,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "1810.HK",
       name: "Xiaomi",
-      eastmoneySecId: "116.01810",
+      sinaTicker: "rt_hk01810",
       qTicker: "r_hk01810",
       market: "HK",
       dlcList: [
@@ -209,11 +210,10 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
         DlcInstrument(dlcTicker: "MZSW", name: "Xiaomi 5xS SG", direction: "SHORT", leverage: 5, bid: 0.110, ask: 0.115),
       ],
     ),
-    // US Stocks
-    StockConfig(ticker: "TSLA", name: "Tesla Inc", eastmoneySecId: "105.TSLA", qTicker: "s_usTSLA", market: "US"),
-    StockConfig(ticker: "NVDA", name: "Nvidia", eastmoneySecId: "105.NVDA", qTicker: "s_usNVDA", market: "US"),
-    StockConfig(ticker: "AAPL", name: "Apple Inc", eastmoneySecId: "105.AAPL", qTicker: "s_usAAPL", market: "US"),
-    StockConfig(ticker: "BABA", name: "Alibaba US ADR", eastmoneySecId: "106.BABA", qTicker: "s_usBABA", market: "US"),
+    StockConfig(ticker: "TSLA", name: "Tesla Inc", sinaTicker: "gb_tsla", qTicker: "s_usTSLA", market: "US"),
+    StockConfig(ticker: "NVDA", name: "Nvidia", sinaTicker: "gb_nvda", qTicker: "s_usNVDA", market: "US"),
+    StockConfig(ticker: "AAPL", name: "Apple Inc", sinaTicker: "gb_aapl", qTicker: "s_usAAPL", market: "US"),
+    StockConfig(ticker: "BABA", name: "Alibaba US ADR", sinaTicker: "gb_baba", qTicker: "s_usBABA", market: "US"),
   ];
 
   late List<StockConfig> userFavorites;
@@ -275,7 +275,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 1: СКАЛЬПЕР DLC (EASTMONEY LEVEL 2 JSON GATEWAY)
+// ЭКРАН 1: СКАЛЬПЕР DLC (SINA L2 + PROXY + M1 КАНАЛ)
 // ---------------------------------------------------------------------------
 
 class DlcScalperScreen extends StatefulWidget {
@@ -314,17 +314,18 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
     targetDlcPercent: 0.0,
     stopLossStockPercent: 0.0,
     timeHorizon: "Ожидание",
-    rationale: "Подключение к биржевому шлюзу Eastmoney...",
+    rationale: "Подключение к гонконгскому прокси 8.210.74.92...",
   );
 
   int stableSignalCounter = 0;
   String pendingSignal = "WAIT";
 
   Timer? _pollingTimer;
+  late http.Client _proxyHttpClient;
 
-  final Map<String, String> requestHeaders = {
+  final Map<String, String> sinaHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://quote.eastmoney.com/',
+    'Referer': 'https://finance.sina.com.cn/',
     'Accept': '*/*',
   };
 
@@ -332,80 +333,78 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   void initState() {
     super.initState();
     currentStock = widget.stocks.first;
+    _initProxyClient();
     _startFeed();
+  }
+
+  void _initProxyClient() {
+    final nativeClient = HttpClient()
+      ..findProxy = (uri) {
+        // Персональный прокси на Alibaba Cloud в Гонконге
+        return "PROXY 8.210.74.92:8888;";
+      }
+      ..badCertificateCallback = (cert, host, port) => true;
+    _proxyHttpClient = IOClient(nativeClient);
   }
 
   void _startFeed() {
     _pollingTimer?.cancel();
-    _fetchEastmoneyQuote();
-    _pollingTimer = Timer.periodic(const Duration(milliseconds: 900), (_) => _fetchEastmoneyQuote());
+    _fetchSinaQuote();
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 750), (_) => _fetchSinaQuote());
   }
 
-  Future<void> _fetchEastmoneyQuote() async {
+  Future<void> _fetchSinaQuote() async {
     try {
-      // f43: Last, f44: High, f45: Low, f60: PrevClose, f86: Timestamp
-      // Bids (Buy 1..5): f19,f17,f15,f13,f11 (цены) / f20,f18,f16,f14,f12 (объемы)
-      // Asks (Sell 1..5): f39,f37,f35,f33,f31 (цены) / f40,f38,f36,f34,f32 (объемы)
-      const fields = "f43,f44,f45,f60,f86,f19,f20,f17,f18,f15,f16,f13,f14,f11,f12,f39,f40,f37,f38,f35,f36,f33,f34,f31,f32";
-      final url = Uri.parse("https://push2.eastmoney.com/api/qt/stock/get?secid=${currentStock.eastmoneySecId}&fields=$fields&invt=2&fltt=1");
+      final url = Uri.parse("https://hq.sinajs.cn/list=${currentStock.sinaTicker}");
+      final res = await _proxyHttpClient.get(url, headers: sinaHeaders).timeout(const Duration(seconds: 3));
 
-      final res = await http.get(url, headers: requestHeaders).timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200 && res.body.contains("=\"")) {
+        _parseSinaQuote(res.body);
+      } else {
+        _fallbackDirectFetch();
+      }
+    } catch (_) {
+      _fallbackDirectFetch();
+    }
+  }
 
-      if (res.statusCode == 200 && res.body.contains('"data"')) {
-        _parseEastmoneyJson(res.body);
+  Future<void> _fallbackDirectFetch() async {
+    try {
+      final url = Uri.parse("http://hq.sinajs.cn/list=${currentStock.sinaTicker}");
+      final res = await _proxyHttpClient.get(url, headers: sinaHeaders).timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200 && res.body.contains("=\"")) {
+        _parseSinaQuote(res.body);
       }
     } catch (_) {
       if (mounted) setState(() => isMarketConnected = false);
     }
   }
 
-  double _parseVal(dynamic val) {
-    if (val == null || val == "-") return 0.0;
-    if (val is num) return val.toDouble();
-    return double.tryParse(val.toString()) ?? 0.0;
-  }
-
-  int _parseInt(dynamic val) {
-    if (val == null || val == "-") return 0;
-    if (val is num) return val.toInt();
-    return int.tryParse(val.toString()) ?? 0;
-  }
-
-  void _parseEastmoneyJson(String rawJson) {
+  void _parseSinaQuote(String raw) {
     try {
-      final decoded = json.decode(rawJson);
-      final data = decoded['data'];
-      if (data == null) return;
+      if (!raw.contains('"')) return;
+      final payload = raw.split('"')[1];
+      final parts = payload.split(',');
+      if (parts.length < 28) return;
 
-      final current = _parseVal(data['f43']);
-      final prev = _parseVal(data['f60']);
-      final high = _parseVal(data['f44']);
-      final low = _parseVal(data['f45']);
-      final epochTime = data['f86'];
+      final prev = double.tryParse(parts[3]) ?? 0.0;
+      final high = double.tryParse(parts[4]) ?? 0.0;
+      final low = double.tryParse(parts[5]) ?? 0.0;
+      final current = double.tryParse(parts[6]) ?? 0.0;
+      final timeStr = parts.length > 18 ? parts[18] : "";
 
-      String timeStr = updateTimestamp;
-      if (epochTime != null && epochTime is int && epochTime > 0) {
-        final dt = DateTime.fromMillisecondsSinceEpoch(epochTime * 1000);
-        timeStr = "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}";
-      }
-
-      // 5 уровней стакана HKEX
+      // 5 уровней биржевого стакана HKEX из Sina
       final List<OrderBookEntry> tempBids = [];
       final List<OrderBookEntry> tempAsks = [];
 
-      final bidPriceKeys = ['f19', 'f17', 'f15', 'f13', 'f11'];
-      final bidVolKeys = ['f20', 'f18', 'f16', 'f14', 'f12'];
-      final askPriceKeys = ['f39', 'f37', 'f35', 'f33', 'f31'];
-      final askVolKeys = ['f40', 'f38', 'f36', 'f34', 'f32'];
-
       for (int i = 0; i < 5; i++) {
-        final bp = _parseVal(data[bidPriceKeys[i]]);
-        final bv = _parseInt(data[bidVolKeys[i]]);
-        if (bp > 0) tempBids.add(OrderBookEntry(bp, bv));
+        final bPrice = double.tryParse(parts[9 + i * 2]) ?? 0.0;
+        final bVol = int.tryParse(parts[10 + i * 2]) ?? 0;
+        if (bPrice > 0) tempBids.add(OrderBookEntry(bPrice, bVol));
 
-        final ap = _parseVal(data[askPriceKeys[i]]);
-        final av = _parseInt(data[askVolKeys[i]]);
-        if (ap > 0) tempAsks.add(OrderBookEntry(ap, av));
+        final aPrice = double.tryParse(parts[19 + i * 2]) ?? 0.0;
+        final aVol = int.tryParse(parts[20 + i * 2]) ?? 0;
+        if (aPrice > 0) tempAsks.add(OrderBookEntry(aPrice, aVol));
       }
 
       if (!mounted) return;
@@ -418,7 +417,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         dayLow = low;
         bids = tempBids;
         asks = tempAsks;
-        updateTimestamp = timeStr;
+        if (timeStr.isNotEmpty) updateTimestamp = timeStr;
 
         _updateCandles(current);
       });
@@ -510,7 +509,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
           targetDlcPercent: targetPct * 5,
           stopLossStockPercent: 0.55,
           timeHorizon: isSwing ? "1-2 ДНЯ (OVERNIGHT SWING)" : "25-45 МИНУТ (INTRADAY)",
-          rationale: "Восходящий импульс. EMA 9 устойчиво выше EMA 21 на интервале M1.",
+          rationale: "Восходящий импульс. EMA 9 стабильно выше EMA 21 на интервале M1.",
         );
       } else if (candidateSignal == "BUY PUT") {
         final targetPct = 1.20;
@@ -524,7 +523,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
           targetDlcPercent: targetPct * 5,
           stopLossStockPercent: 0.50,
           timeHorizon: isSwing ? "1-2 ДНЯ (OVERNIGHT SWING)" : "20-40 МИНУТ (INTRADAY)",
-          rationale: "Медвежье давление. Продавцы удерживают цену ниже средних на M1.",
+          rationale: "Нисходящий тренд. Давление продавцов подтверждено закрытием M1 свечей.",
         );
       } else {
         currentPlan = TradePlan(
@@ -558,6 +557,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   @override
   void dispose() {
     _pollingTimer?.cancel();
+    _proxyHttpClient.close();
     super.dispose();
   }
 
@@ -619,7 +619,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(livePrice > 0 ? "HK\$ ${livePrice.toStringAsFixed(2)}" : "Загрузка...", style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                    Text(livePrice > 0 ? "HK\$ ${livePrice.toStringAsFixed(2)}" : "Загрузка через HK VPS...", style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
                     Text("${changePercent >= 0 ? '+' : ''}${changePercent.toStringAsFixed(2)}% к закрытию", style: TextStyle(color: priceColor, fontWeight: FontWeight.bold, fontSize: 13)),
                   ],
                 ),
@@ -757,7 +757,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: const Color(0xFF161B22), borderRadius: BorderRadius.circular(12)),
         child: const Center(
-          child: Text("Ожидание пакета стакана от HKEX...", style: TextStyle(color: Colors.white38)),
+          child: Text("Ожидание стакана от Sina через HK Gateway...", style: TextStyle(color: Colors.white38)),
         ),
       );
     }
