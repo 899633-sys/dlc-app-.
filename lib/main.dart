@@ -30,13 +30,15 @@ class DlcScalperApp extends StatelessWidget {
 class StockConfig {
   final String ticker;
   final String name;
-  final String qTicker;
-  final String market; // "HK" или "US"
+  final String sinaTicker; // Формат Sina: rt_hk00700
+  final String qTicker;    // Формат Tencent для Watchlist: r_hk00700 / s_usTSLA
+  final String market;     // "HK" или "US"
   final List<DlcInstrument> dlcList;
 
   StockConfig({
     required this.ticker,
     required this.name,
+    required this.sinaTicker,
     required this.qTicker,
     this.market = "HK",
     this.dlcList = const [],
@@ -104,10 +106,10 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
   int _currentIndex = 0;
 
   final List<StockConfig> masterStockDirectory = [
-    // HKEX с DLC на SGX
     StockConfig(
       ticker: "0700.HK",
       name: "Tencent",
+      sinaTicker: "rt_hk00700",
       qTicker: "r_hk00700",
       market: "HK",
       dlcList: [
@@ -118,6 +120,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "9988.HK",
       name: "Alibaba HK",
+      sinaTicker: "rt_hk09988",
       qTicker: "r_hk09988",
       market: "HK",
       dlcList: [
@@ -128,6 +131,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "3690.HK",
       name: "Meituan",
+      sinaTicker: "rt_hk03690",
       qTicker: "r_hk03690",
       market: "HK",
       dlcList: [
@@ -138,6 +142,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "0175.HK",
       name: "Geely Auto",
+      sinaTicker: "rt_hk00175",
       qTicker: "r_hk00175",
       market: "HK",
       dlcList: [
@@ -148,6 +153,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "1211.HK",
       name: "BYD Company",
+      sinaTicker: "rt_hk01211",
       qTicker: "r_hk01211",
       market: "HK",
       dlcList: [
@@ -158,6 +164,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "1810.HK",
       name: "Xiaomi",
+      sinaTicker: "rt_hk01810",
       qTicker: "r_hk01810",
       market: "HK",
       dlcList: [
@@ -166,10 +173,10 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
       ],
     ),
     // US Stocks
-    StockConfig(ticker: "TSLA", name: "Tesla Inc", qTicker: "s_usTSLA", market: "US"),
-    StockConfig(ticker: "NVDA", name: "Nvidia", qTicker: "s_usNVDA", market: "US"),
-    StockConfig(ticker: "AAPL", name: "Apple Inc", qTicker: "s_usAAPL", market: "US"),
-    StockConfig(ticker: "BABA", name: "Alibaba US ADR", qTicker: "s_usBABA", market: "US"),
+    StockConfig(ticker: "TSLA", name: "Tesla Inc", sinaTicker: "gb_tsla", qTicker: "s_usTSLA", market: "US"),
+    StockConfig(ticker: "NVDA", name: "Nvidia", sinaTicker: "gb_nvda", qTicker: "s_usNVDA", market: "US"),
+    StockConfig(ticker: "AAPL", name: "Apple Inc", sinaTicker: "gb_aapl", qTicker: "s_usAAPL", market: "US"),
+    StockConfig(ticker: "BABA", name: "Alibaba US ADR", sinaTicker: "gb_baba", qTicker: "s_usBABA", market: "US"),
   ];
 
   late List<StockConfig> userFavorites;
@@ -231,7 +238,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 1: СКАЛЬПЕР DLC
+// ЭКРАН 1: СКАЛЬПЕР DLC (SINA L2 ORDER BOOK GATEWAY)
 // ---------------------------------------------------------------------------
 
 class DlcScalperScreen extends StatefulWidget {
@@ -268,10 +275,9 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
   Timer? _pollingTimer;
 
-  // Браузерные заголовки для обхода фильтров CDN Tencent
-  final Map<String, String> requestHeaders = {
+  final Map<String, String> sinaHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://finance.qq.com/',
+    'Referer': 'https://finance.sina.com.cn/',
     'Accept': '*/*',
   };
 
@@ -284,26 +290,24 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
   void _startFeed() {
     _pollingTimer?.cancel();
-    _fetchQuote();
-    // Опрос каждые 800 мс для высокой точности
-    _pollingTimer = Timer.periodic(const Duration(milliseconds: 800), (_) => _fetchQuote());
+    _fetchSinaQuote();
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 700), (_) => _fetchSinaQuote());
   }
 
-  Future<void> _fetchQuote() async {
+  Future<void> _fetchSinaQuote() async {
     try {
-      final url = Uri.parse("https://qt.gtimg.cn/q=${currentStock.qTicker}");
-      final res = await http.get(url, headers: requestHeaders).timeout(const Duration(seconds: 3));
+      final url = Uri.parse("https://hq.sinajs.cn/list=${currentStock.sinaTicker}");
+      final res = await http.get(url, headers: sinaHeaders).timeout(const Duration(seconds: 3));
 
-      if (res.statusCode == 200 && res.body.contains("~")) {
-        _parseQuote(res.body);
+      if (res.statusCode == 200 && res.body.contains("=\"")) {
+        _parseSinaQuote(res.body);
       }
     } catch (_) {
-      // Запасной протокол http в случае сбоя SSL рукопожатия
       try {
-        final fallbackUrl = Uri.parse("http://qt.gtimg.cn/q=${currentStock.qTicker}");
-        final res = await http.get(fallbackUrl, headers: requestHeaders).timeout(const Duration(seconds: 3));
-        if (res.statusCode == 200 && res.body.contains("~")) {
-          _parseQuote(res.body);
+        final fallbackUrl = Uri.parse("http://hq.sinajs.cn/list=${currentStock.sinaTicker}");
+        final res = await http.get(fallbackUrl, headers: sinaHeaders).timeout(const Duration(seconds: 3));
+        if (res.statusCode == 200 && res.body.contains("=\"")) {
+          _parseSinaQuote(res.body);
         }
       } catch (_) {
         if (mounted) setState(() => isMarketConnected = false);
@@ -311,31 +315,35 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
     }
   }
 
-  void _parseQuote(String raw) {
+  void _parseSinaQuote(String raw) {
     try {
       if (!raw.contains('"')) return;
       final payload = raw.split('"')[1];
-      final parts = payload.split('~');
-      if (parts.length < 35) return;
+      final parts = payload.split(',');
+      if (parts.length < 28) return;
 
-      final current = double.tryParse(parts[3]) ?? 0.0;
-      final prev = double.tryParse(parts[4]) ?? 0.0;
-      final high = double.tryParse(parts[33]) ?? 0.0;
-      final low = double.tryParse(parts[34]) ?? 0.0;
-      final timeStr = parts.length > 30 ? parts[30] : "";
+      // Формат Sina rt_hk:
+      // 3: Пред. закрытие, 4: High, 5: Low, 6: Текущая цена сделки (Last)
+      final prev = double.tryParse(parts[3]) ?? 0.0;
+      final high = double.tryParse(parts[4]) ?? 0.0;
+      final low = double.tryParse(parts[5]) ?? 0.0;
+      final current = double.tryParse(parts[6]) ?? 0.0;
+      final timeStr = parts.length > 18 ? parts[18] : "";
 
+      // Парсинг 5 уровней стакана HKEX:
+      // Bid: цены на индексах 9, 11, 13, 15, 17 | объемы на 10, 12, 14, 16, 18
+      // Ask: цены на индексах 19, 21, 23, 25, 27 | объемы на 20, 22, 24, 26, 28
       final List<OrderBookEntry> tempBids = [];
       final List<OrderBookEntry> tempAsks = [];
 
       for (int i = 0; i < 5; i++) {
-        final p = double.tryParse(parts[19 + i * 2]) ?? 0.0;
-        final v = int.tryParse(parts[20 + i * 2]) ?? 0;
-        if (p > 0) tempAsks.add(OrderBookEntry(p, v));
-      }
-      for (int i = 0; i < 5; i++) {
-        final p = double.tryParse(parts[9 + i * 2]) ?? 0.0;
-        final v = int.tryParse(parts[10 + i * 2]) ?? 0;
-        if (p > 0) tempBids.add(OrderBookEntry(p, v));
+        final bPrice = double.tryParse(parts[9 + i * 2]) ?? 0.0;
+        final bVol = int.tryParse(parts[10 + i * 2]) ?? 0;
+        if (bPrice > 0) tempBids.add(OrderBookEntry(bPrice, bVol));
+
+        final aPrice = double.tryParse(parts[19 + i * 2]) ?? 0.0;
+        final aVol = int.tryParse(parts[20 + i * 2]) ?? 0;
+        if (aPrice > 0) tempAsks.add(OrderBookEntry(aPrice, aVol));
       }
 
       if (!mounted) return;
@@ -348,9 +356,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         dayLow = low;
         bids = tempBids;
         asks = tempAsks;
-        if (timeStr.length >= 6) {
-          updateTimestamp = "${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}";
-        }
+        if (timeStr.isNotEmpty) updateTimestamp = timeStr;
 
         if (emaFast == 0.0) {
           emaFast = livePrice;
@@ -679,7 +685,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 2: ИЗБРАННОЕ
+// ЭКРАН 2: ИЗБРАННОЕ (МУЛЬТИРЫНОК)
 // ---------------------------------------------------------------------------
 
 class WatchlistScreen extends StatefulWidget {
