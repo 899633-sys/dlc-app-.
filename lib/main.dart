@@ -30,15 +30,15 @@ class DlcScalperApp extends StatelessWidget {
 class StockConfig {
   final String ticker;
   final String name;
-  final String sinaTicker;
-  final String qTicker;
+  final String tencentTicker; // Прямой тикер Tencent: hk00700 для стакана L2
+  final String qTicker;       // Для мультизапроса Watchlist: hk00700 / s_usTSLA
   final String market;
   final List<DlcInstrument> dlcList;
 
   StockConfig({
     required this.ticker,
     required this.name,
-    required this.sinaTicker,
+    required this.tencentTicker,
     required this.qTicker,
     this.market = "HK",
     this.dlcList = const [],
@@ -88,7 +88,7 @@ class MinuteCandle {
 }
 
 class TradePlan {
-  final String action; // "BUY CALL (LONG DLC)" / "BUY PUT (SHORT DLC)" / "WAIT"
+  final String action;
   final double targetStockPrice;
   final double targetStockPercent;
   final double targetDlcPercent;
@@ -145,8 +145,8 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "0700.HK",
       name: "Tencent",
-      sinaTicker: "rt_hk00700",
-      qTicker: "r_hk00700",
+      tencentTicker: "hk00700",
+      qTicker: "hk00700",
       market: "HK",
       dlcList: [
         DlcInstrument(dlcTicker: "WK4W", name: "Tencent 5xL SG", direction: "LONG", leverage: 5, bid: 0.420, ask: 0.425),
@@ -156,8 +156,8 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "9988.HK",
       name: "Alibaba HK",
-      sinaTicker: "rt_hk09988",
-      qTicker: "r_hk09988",
+      tencentTicker: "hk09988",
+      qTicker: "hk09988",
       market: "HK",
       dlcList: [
         DlcInstrument(dlcTicker: "BSIW", name: "Alibaba 5xL SG", direction: "LONG", leverage: 5, bid: 0.510, ask: 0.515),
@@ -167,8 +167,8 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "3690.HK",
       name: "Meituan",
-      sinaTicker: "rt_hk03690",
-      qTicker: "r_hk03690",
+      tencentTicker: "hk03690",
+      qTicker: "hk03690",
       market: "HK",
       dlcList: [
         DlcInstrument(dlcTicker: "MBMW", name: "Meituan 5xL SG", direction: "LONG", leverage: 5, bid: 0.380, ask: 0.385),
@@ -178,8 +178,8 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "0175.HK",
       name: "Geely Auto",
-      sinaTicker: "rt_hk00175",
-      qTicker: "r_hk00175",
+      tencentTicker: "hk00175",
+      qTicker: "hk00175",
       market: "HK",
       dlcList: [
         DlcInstrument(dlcTicker: "GLYW", name: "Geely 5xL SG", direction: "LONG", leverage: 5, bid: 0.280, ask: 0.285),
@@ -189,8 +189,8 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "1211.HK",
       name: "BYD Company",
-      sinaTicker: "rt_hk01211",
-      qTicker: "r_hk01211",
+      tencentTicker: "hk01211",
+      qTicker: "hk01211",
       market: "HK",
       dlcList: [
         DlcInstrument(dlcTicker: "BYDW", name: "BYD 5xL SG", direction: "LONG", leverage: 5, bid: 0.620, ask: 0.630),
@@ -200,18 +200,18 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
     StockConfig(
       ticker: "1810.HK",
       name: "Xiaomi",
-      sinaTicker: "rt_hk01810",
-      qTicker: "r_hk01810",
+      tencentTicker: "hk01810",
+      qTicker: "hk01810",
       market: "HK",
       dlcList: [
         DlcInstrument(dlcTicker: "MZNW", name: "Xiaomi 5xL SG", direction: "LONG", leverage: 5, bid: 0.045, ask: 0.046),
         DlcInstrument(dlcTicker: "MZSW", name: "Xiaomi 5xS SG", direction: "SHORT", leverage: 5, bid: 0.110, ask: 0.115),
       ],
     ),
-    StockConfig(ticker: "TSLA", name: "Tesla Inc", sinaTicker: "gb_tsla", qTicker: "s_usTSLA", market: "US"),
-    StockConfig(ticker: "NVDA", name: "Nvidia", sinaTicker: "gb_nvda", qTicker: "s_usNVDA", market: "US"),
-    StockConfig(ticker: "AAPL", name: "Apple Inc", sinaTicker: "gb_aapl", qTicker: "s_usAAPL", market: "US"),
-    StockConfig(ticker: "BABA", name: "Alibaba US ADR", sinaTicker: "gb_baba", qTicker: "s_usBABA", market: "US"),
+    StockConfig(ticker: "TSLA", name: "Tesla Inc", tencentTicker: "usTSLA", qTicker: "s_usTSLA", market: "US"),
+    StockConfig(ticker: "NVDA", name: "Nvidia", tencentTicker: "usNVDA", qTicker: "s_usNVDA", market: "US"),
+    StockConfig(ticker: "AAPL", name: "Apple Inc", tencentTicker: "usAAPL", qTicker: "s_usAAPL", market: "US"),
+    StockConfig(ticker: "BABA", name: "Alibaba US ADR", tencentTicker: "usBABA", qTicker: "s_usBABA", market: "US"),
   ];
 
   late List<StockConfig> userFavorites;
@@ -273,7 +273,7 @@ class _RootNavigationContainerState extends State<RootNavigationContainer> {
 }
 
 // ---------------------------------------------------------------------------
-// ЭКРАН 1: СКАЛЬПЕР DLC (M1 СВЕЧИ + СТАБИЛЬНЫЙ СИГНАЛ + ЦЕЛИ)
+// ЭКРАН 1: СКАЛЬПЕР DLC (TENCENT L2 + M1 ФИЛЬТР)
 // ---------------------------------------------------------------------------
 
 class DlcScalperScreen extends StatefulWidget {
@@ -293,12 +293,11 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   String updateTimestamp = "--:--:--";
   bool isMarketConnected = false;
 
-  // Агрегатор минутных свечей (M1) для фильтрации шума
   final List<MinuteCandle> m1Candles = [];
   MinuteCandle? currentCandle;
 
-  double emaFast = 0.0; // EMA 9 по закрытиям M1
-  double emaSlow = 0.0; // EMA 21 по закрытиям M1
+  double emaFast = 0.0;
+  double emaSlow = 0.0;
   final double alphaFast = 2 / (9 + 1);
   final double alphaSlow = 2 / (21 + 1);
   double rsi = 50.0;
@@ -306,7 +305,6 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   List<OrderBookEntry> bids = [];
   List<OrderBookEntry> asks = [];
 
-  // Стабильный торговый план
   TradePlan currentPlan = TradePlan(
     action: "WAIT",
     targetStockPrice: 0.0,
@@ -314,7 +312,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
     targetDlcPercent: 0.0,
     stopLossStockPercent: 0.0,
     timeHorizon: "Ожидание",
-    rationale: "Идет накопление тиков и формирование минутной структуры.",
+    rationale: "Сбор тиков и формирование минутной структуры...",
   );
 
   int stableSignalCounter = 0;
@@ -322,9 +320,9 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
   Timer? _pollingTimer;
 
-  final Map<String, String> sinaHeaders = {
+  final Map<String, String> requestHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://finance.sina.com.cn/',
+    'Referer': 'https://finance.qq.com/',
     'Accept': '*/*',
   };
 
@@ -337,24 +335,24 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
   void _startFeed() {
     _pollingTimer?.cancel();
-    _fetchSinaQuote();
-    _pollingTimer = Timer.periodic(const Duration(milliseconds: 700), (_) => _fetchSinaQuote());
+    _fetchTencentQuote();
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 900), (_) => _fetchTencentQuote());
   }
 
-  Future<void> _fetchSinaQuote() async {
+  Future<void> _fetchTencentQuote() async {
     try {
-      final url = Uri.parse("https://hq.sinajs.cn/list=${currentStock.sinaTicker}");
-      final res = await http.get(url, headers: sinaHeaders).timeout(const Duration(seconds: 3));
+      final url = Uri.parse("https://qt.gtimg.cn/q=${currentStock.tencentTicker}");
+      final res = await http.get(url, headers: requestHeaders).timeout(const Duration(seconds: 3));
 
-      if (res.statusCode == 200 && res.body.contains("=\"")) {
-        _parseSinaQuote(res.body);
+      if (res.statusCode == 200 && res.body.contains("~")) {
+        _parseTencentQuote(res.body);
       }
     } catch (_) {
       try {
-        final fallbackUrl = Uri.parse("http://hq.sinajs.cn/list=${currentStock.sinaTicker}");
-        final res = await http.get(fallbackUrl, headers: sinaHeaders).timeout(const Duration(seconds: 3));
-        if (res.statusCode == 200 && res.body.contains("=\"")) {
-          _parseSinaQuote(res.body);
+        final fallbackUrl = Uri.parse("http://qt.gtimg.cn/q=${currentStock.tencentTicker}");
+        final res = await http.get(fallbackUrl, headers: requestHeaders).timeout(const Duration(seconds: 3));
+        if (res.statusCode == 200 && res.body.contains("~")) {
+          _parseTencentQuote(res.body);
         }
       } catch (_) {
         if (mounted) setState(() => isMarketConnected = false);
@@ -362,19 +360,22 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
     }
   }
 
-  void _parseSinaQuote(String raw) {
+  void _parseTencentQuote(String raw) {
     try {
       if (!raw.contains('"')) return;
       final payload = raw.split('"')[1];
-      final parts = payload.split(',');
-      if (parts.length < 28) return;
+      final parts = payload.split('~');
+      if (parts.length < 35) return;
 
-      final prev = double.tryParse(parts[3]) ?? 0.0;
-      final high = double.tryParse(parts[4]) ?? 0.0;
-      final low = double.tryParse(parts[5]) ?? 0.0;
-      final current = double.tryParse(parts[6]) ?? 0.0;
-      final timeStr = parts.length > 18 ? parts[18] : "";
+      final current = double.tryParse(parts[3]) ?? 0.0;
+      final prev = double.tryParse(parts[4]) ?? 0.0;
+      final high = double.tryParse(parts[33]) ?? 0.0;
+      final low = double.tryParse(parts[34]) ?? 0.0;
+      final timeStr = parts.length > 30 ? parts[30] : "";
 
+      // Парсинг 5 уровней стакана HKEX из Tencent (hkXXXXX):
+      // Bid цены: 9, 11, 13, 15, 17 | объемы: 10, 12, 14, 16, 18
+      // Ask цены: 19, 21, 23, 25, 27 | объемы: 20, 22, 24, 26, 28
       final List<OrderBookEntry> tempBids = [];
       final List<OrderBookEntry> tempAsks = [];
 
@@ -398,9 +399,10 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         dayLow = low;
         bids = tempBids;
         asks = tempAsks;
-        if (timeStr.isNotEmpty) updateTimestamp = timeStr;
+        if (timeStr.length >= 6) {
+          updateTimestamp = "${timeStr.substring(0, 2)}:${timeStr.substring(2, 4)}:${timeStr.substring(4, 6)}";
+        }
 
-        // Посекундная агрегация в M1-свечи
         _updateCandles(current);
       });
     } catch (_) {}
@@ -462,17 +464,15 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
   void _evaluateStableTradePlan() {
     if (emaSlow == 0.0) return;
 
-    // Расхождение EMA в процентах
     final diffPercent = ((emaFast - emaSlow) / emaSlow) * 100;
 
     String candidateSignal = "WAIT";
-    if (diffPercent >= 0.18 && rsi < 68) {
+    if (diffPercent >= 0.15 && rsi < 68) {
       candidateSignal = "BUY CALL";
-    } else if (diffPercent <= -0.18 && rsi > 32) {
+    } else if (diffPercent <= -0.15 && rsi > 32) {
       candidateSignal = "BUY PUT";
     }
 
-    // Фильтр дребезга (Сигнал должен удержаться минимум 3 подтверждения подряд)
     if (candidateSignal == pendingSignal) {
       stableSignalCounter++;
     } else {
@@ -482,24 +482,23 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
 
     if (stableSignalCounter >= 3) {
       if (candidateSignal == "BUY CALL") {
-        // Цель базового актива: минимум +1.2%, стоп -0.5%
         final targetPct = 1.25;
         final targetPrice = livePrice * (1 + targetPct / 100);
-        final isSwing = rsi >= 45 && rsi <= 60 && diffPercent >= 0.35;
+        final isSwing = rsi >= 45 && rsi <= 60 && diffPercent >= 0.30;
 
         currentPlan = TradePlan(
           action: "BUY CALL (LONG DLC)",
           targetStockPrice: targetPrice,
           targetStockPercent: targetPct,
-          targetDlcPercent: targetPct * 5, // плечо 5x
+          targetDlcPercent: targetPct * 5,
           stopLossStockPercent: 0.55,
           timeHorizon: isSwing ? "1-2 ДНЯ (OVERNIGHT SWING)" : "25-45 МИНУТ (INTRADAY)",
-          rationale: "EMA 9 уверенно выше EMA 21. Импульс подтвержден закрытием минутных свечей.",
+          rationale: "Восходящий импульс. EMA 9 устойчиво выше EMA 21 на интервале M1.",
         );
       } else if (candidateSignal == "BUY PUT") {
         final targetPct = 1.20;
         final targetPrice = livePrice * (1 - targetPct / 100);
-        final isSwing = rsi <= 55 && rsi >= 40 && diffPercent <= -0.35;
+        final isSwing = rsi <= 55 && rsi >= 40 && diffPercent <= -0.30;
 
         currentPlan = TradePlan(
           action: "BUY PUT (SHORT DLC)",
@@ -508,7 +507,7 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
           targetDlcPercent: targetPct * 5,
           stopLossStockPercent: 0.50,
           timeHorizon: isSwing ? "1-2 ДНЯ (OVERNIGHT SWING)" : "20-40 МИНУТ (INTRADAY)",
-          rationale: "Нисходящий тренд. Давление продавцов устойчиво на интервале M1.",
+          rationale: "Медвежье давление. Продавцы удерживают цену ниже средних на M1.",
         );
       } else {
         currentPlan = TradePlan(
@@ -597,7 +596,6 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Котировки
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -619,7 +617,6 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
             ),
             const SizedBox(height: 14),
 
-            // Индикаторы M1
             Row(
               children: [
                 _buildBox("EMA 9 (M1)", emaFast.toStringAsFixed(2), Colors.cyanAccent),
@@ -631,17 +628,14 @@ class _DlcScalperScreenState extends State<DlcScalperScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Торговый план: цель, временной горизонт и стоп
             _buildTradePlanCard(),
             const SizedBox(height: 18),
 
-            // Стакан заявок (Level 2)
             const Text("ГЛУБИНА РЫНКА (LEVEL 2 • СТАКАН HKEX)", style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             _buildOrderBook(),
             const SizedBox(height: 20),
 
-            // Список рекомендованных DLC
             const Text("ИНСТРУМЕНТЫ ДЛЯ СДЕЛКИ (SGX DLC)", style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ..._getRankedDlcs().map((d) => _buildDlcTile(d)).toList(),
